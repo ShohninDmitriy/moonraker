@@ -35,11 +35,11 @@ port: 7125
 klippy_uds_address: /tmp/klippy_uds
 #   The address of Unix Domain Socket used to communicate with Klippy. Default
 #   is /tmp/klippy_uds
-max_upload_size: 200
-#   The maximum size allowed for a file upload.  Default is 200 MiB.
-enable_debug_logging: True
+max_upload_size: 1024
+#   The maximum size allowed for a file upload (in MiB).  Default is 1024 MiB.
+enable_debug_logging: False
 #   When set to True Moonraker will log in verbose mode.  During this stage
-#   of development the default is True.  In the future this will change.
+#   of development the default is False.
 config_path:
 #   The path to a directory where configuration files are located. This
 #   directory may contain Klipper config files (printer.cfg) or Moonraker
@@ -47,6 +47,12 @@ config_path:
 #   files to this directory.  Note that this may not be the system root
 #   (ie: "/") and moonraker must have read and write access permissions
 #   for this directory.
+database_path: ~/.moonraker_database
+#   The path to the folder that stores Moonraker's lmdb database files.
+#   It is NOT recommended to place this file in a location that is served by
+#   Moonraker (such as the "config_path" or the location where gcode
+#   files are stored).  If the folder does not exist an attempt will be made
+#   to create it.  The default is ~/.moonraker_database.
 temperature_store_size: 1200
 #   The maximum number of temperature values to store for each sensor. Note
 #   that this value also applies to the "target", "power", and "fan_speed"
@@ -88,6 +94,17 @@ cors_domains:
 # Plugin Configuration
 The sections outlined here are optional and enable additional
 functionality in moonraker.
+
+## Octoprint compatibility
+Enables partial support of Octoprint API is implemented with the purpose of
+allowing uploading of sliced prints to a moonraker instance.
+Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
+
+```
+# moonraker.conf
+
+[octoprint_compat]
+```
 
 ## paneldue
 Enables PanelDue display support.  The PanelDue should be connected to the
@@ -342,7 +359,9 @@ updating.
 [update_manager client service_name]
 type: git_repo
 path:
-#   The path to the client's files on disk.  This parameter must be provided.
+#   The absolute path to the client's files on disk. This parameter must be provided.
+#   Example:
+#     path: ~/service_name
 origin:
 #   The full GitHub URL of the "origin" remote for the repository.  This can
 #   be be viewed by navigating to your repository and running:

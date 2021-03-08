@@ -2,32 +2,115 @@
 
 Most API methods are supported over both the Websocket and HTTP transports.
 File Transfer and "/access" requests are only available over HTTP. The
-Websocket is required to receive printer generated events such as gcode
+Websocket is required to receive server generated events such as gcode
 responses.  For information on how to set up the Websocket, please see the
 Appendix at the end of this document.
 
-Note that all HTTP responses are returned as a json encoded object in the form
-of:
+### HTTP API Overview
+
+Moonraker's HTTP API could best be described as "RESTish".  Attempts are
+made to conform to REST standards, however the dynamic nature of
+Moonraker's API registration along with the desire to keep consistency
+between mulitple API protocols results in an HTTP API that does not
+completely adhere to the standard.
+
+Moonraker is capable of parsing request arguments from the both the body
+(either JSON or form-data depending on the `Content-Type` header) and from
+the query string.  All arguments are grouped together in one data structure,
+with body arguments taking precedence over query arguments.  Thus
+if the same argument is supplied both in the body and in the
+query string the body argument would be used. It is left up to the client
+developer to decide exactly how they want to provide arguments, however
+future API documention will make recommendations.  As of March 1st 2021
+this document exclusively illustrates arguments via the query string.
+
+All successful HTTP requests will return a json encoded object in the form of:
 
 `{result: <response data>}`
 
-Arguments sent via the HTTP APIs may either be included in the query string
-or as part of the request's body.  All of the examples in this document
-use the query string for arguments.
+Response data is generally an object itself, however for some requests this
+may simply be an "ok" string.
 
-Websocket requests are returned in JSON-RPC format:
-`{jsonrpc: "2.0", "result": <response data>, id: <request id>}`
+Should a request result in an error, a standard error code along with
+an error specific message is returned.
 
-HTML requests will recieve a 500 status code on error, accompanied by
-the specific error message.
+#### Query string type hints
 
-Websocket requests that result in an error will receive a properly formatted
+By default all arguments passed via the query string are represented as
+strings.  Most endpoint handlers know the data type for each of their
+arguments, thus they can perform conversion from a string type if necessary.
+However some endpoints accept arguments of a "generic" type, thus the
+client is responsible for specifying the type if "string" is not desirable.
+This is not a problem for websocket requests as the JSON parser can extract
+the appropriate type.  HTTP requests must provide "type hints" in these
+scenarios.  Moonraker supplies support for the following query string type hints:
+- int
+- bool
+- float
+- json
+The `json` type hint can be specified to pass an array or an object via
+the query string.  Remember to percent encode the json string so that
+the query string is correctly parsed.
+
+Type hints may be specified by post-fixing them to a key, with a ":"
+separating the key and the hint.  For example, lets assume that we
+have a request that takes `seconds` (integer) and `enabled` (boolean)
+arguments.  The query string with type hints might look like:
+```
+?seconds:int=120&enabled:bool=true
+```
+A query string that takes a `value` argument with which we want to
+assing an object, `{foo: 21.5, bar: "hello"}` might look like:
+```
+?value:json=%7B%22foo%22%3A21.5%2C%22bar%22%3A%22hello%22%7D
+```
+As you can see, a percent encoded json string is not human readable,
+thus using this functionality should be seen as a "last resort."  If at
+all possible clients should attempt to put these arguments in the body
+of a request.
+
+### Websocket API Overview
+
+The Websocket API is based on JSON-RPC, an encoded request should look
+something like:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "API method",
+    "params": {"arg_one": 1, "arg_two": true},
+    "id": 354
+}
+```
+
+The `params` field may be left out if the API request takes no arguments.
+The `id` should be a unique integer value that has no chance of colliding
+with other JSON-RPC requests.  The `method` is the API method, as defined
+for each API in this document.
+
+A successful request will return a response like the following:
+```json
+{
+    "jsonrpc": "2.0",
+    "result": {"res_data": "success"},
+    "id": 354
+}
+```
+The `result` will generally contain an object, but as with the HTTP API in some
+cases it may simply return a string.  The `id` field will return an id that
+matches the one provided by the request.
+
+Requests that result in an error will receive a properly formatted
 JSON-RPC response:
-`{jsonrpc: "2.0", "error": {code: <code>, message: <msg>}, id: <request_id>}`
-Note that under some circumstances it may not be possible for the server to
-return a request ID, such as an improperly formatted json request.
+```json
+{
+    "jsonrpc": "2.0",
+    "error": {"code": 36000, "message": "Error Message"},
+    "id": 354
+}
+```
+Some errors may not return a request ID, such as an improperly formatted request.
 
-The `test\client` folder includes a basic test interface with example usage for
+The `test/client` folder includes a basic test interface with example usage for
 most of the requests below.  It also includes a basic JSON-RPC implementation
 that uses promises to return responses and errors (see json-rcp.js).
 
@@ -455,7 +538,7 @@ The `type` field will either be "command" or "response".
 
 ### Restart a system service
 Restarts a system service via `sudo systemctl restart <name>`. Currently
-only `moonraker` and `klipper` are allowed.
+only `moonraker`, `klipper`, and `webcamd` are allowed.
 
 - HTTP command:\
   `POST /machine/services/restart?service=<service_name>`
@@ -467,6 +550,91 @@ only `moonraker` and `klipper` are allowed.
 - Returns:\
   `ok` when complete.  Note that if `moonraker` is chosen, the return
   value will be sent prior to the restart.
+
+### Stop a system service
+Stops a system service via `sudo systemctl stop <name>`. Currently
+only `webcamd` and `klipper` are allowed.
+
+- HTTP command:\
+  `POST /machine/services/stop?service=<service_name>`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "machine.services.stop",
+  params: {service: "service name"}, id: <request id>}`
+
+- Returns:\
+  `ok` when complete
+
+### Start a system service
+Starts a system service via `sudo systemctl start <name>`. Currently
+only `webcamd` and `klipper` are allowed.
+
+- HTTP command:\
+  `POST /machine/services/start?service=<service_name>`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "machine.services.start",
+  params: {service: "service name"}, id: <request id>}`
+
+- Returns:\
+  `ok` when complete
+
+### Get Process Info
+Returns system usage information about the moonraker process.
+
+- HTTP command:\
+  `GET /machine/proc_info`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "machine.proc_info", id: <request id>}`
+
+- Returns:\
+  An object in the following format:
+  ```json
+  {
+      proc_info: [
+          {
+              time: <system time of sample>,
+              cpu_usage: <usage percent>,
+              memory: <memory_used>,
+              mem_units: "<kB, mB, etc>"
+          },
+          ...
+      ],
+      throttled_state: {
+          bits: <throttled bits>,
+          flags: ["flag1", "flag2", ...]
+      }
+  }
+  ```
+  Process information is sampled every second.  The `proc_info` field
+  will return up to 30 samples, each sample with the following fields:
+  - `time`: Time of the sample (in seconds since the Epoch)
+  - `cpu_usage`: A floating point value between 0-100, representing the
+    CPU usage of the Moonraker process.
+  - `memory`: Integer value representing the current amount of memory
+    allocated in RAM (resident set size).
+  - `mem_units`: A string indentifying the units of the value in the
+    `memory` field.  This is typically "kB", but not guaranteed.
+  If the system running Moonraker supports `vcgencmd` then Moonraker
+  will check the current throttled flags via `vcgencmd get_throttled`
+  and report them in the `throttled_state` field:
+  - `bits`: An integer value that represents the bits reported by
+    `vcgencmd get_throttled`
+  - `flags`: Descriptive flags parsed out of the bits.  One or more
+    of the following flags may be reported:
+    - "Under-Voltage Detected"
+    - "Frequency Capped"
+    - "Currently Throttled"
+    - "Temperature Limit Active"
+    - "Previously Under-Volted"
+    - "Previously Frequency Capped"
+    - "Previously Throttled"
+    - "Previously Temperature Limited"
+  The first four flags indicate an active throttling condition,
+  whereas the last four indicate a previous condition (may or
+  may not still be active).  If `vcgencmd` is not available the
+  `throttled_state` will report `null`.
 
 ## File Operations
 
@@ -480,7 +648,6 @@ as the "gcodes" root.  The following roots are available:
 - config
 - config_examples (read-only)
 - docs (read-only)
-- timelapse (if plugin is active)
 
 Write operations (upload, delete, make directory, remove directory) are
 only available on the `gcodes` and config roots.  Note that the `config` root
@@ -857,8 +1024,135 @@ only be used once, making them relatively for inclusion in the query string.
   to any API endpoint.  The query string should be added in the form of:
   `?token=randomly_generated_token`
 
+## Database APIs
+The following endpoints provide access to Moonraker's ldbm database.  The
+database is divided into "namespaces", each client may define its own
+namespace to store information.  From the client's point of view, a
+namespace is an "object".  Items in the database are accessed by providing
+a namespace and a key.  A key may be specifed as string, where a "." is a
+delimeter to access nested objects. Alternatively the key may be specified
+as an array of strings, where each string references a nested object.
+This is useful for scenarios where your namespace contain keys that include
+a "." character.
+
+Moonraker reserves "moonraker" and "gcode_metadata" namespaces.  Clients may
+read from these namespaces but they may not modify them.
+
+For example, assume the following object is stored in the "superclient"
+namespace:
+
+```json
+{
+    settings: {
+        console: {
+            enable_autocomple: True
+        }
+    }
+    theme: {
+        background_color: "black"
+    }
+}
+```
+One may access the "enable_autocomplete" field by supplying `superclient` as
+the "namespace" parameter and `settings.console.enable_autocomplete` or
+`["settings", "console", "enable_autocomplete"]` as the "key" parameter for
+the request.  The entire settings object could be accessed by providing
+`settings` or `["settings"]` as the key parameter.  The entire namespace
+may be read by omitting the "key" parameter, however as explained below it
+is not possible to modify a namespace without specifying a key.
+
+### List Namespaces
+Lists all available namespaces.
+
+- HTTP command:\
+  `GET /server/database/list`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "server.database.list", id: <request id>}`
+
+- Returns:\
+  An object containing an array of namespaces in the following format:
+  ```json
+  {
+      'namespaces': ["namespace1", "namespace2"...]
+  }
+  ```
+
+### Get Database Item
+Retreives an item from a specified namespace. The `key` parameter may be
+omitted, in which case an object representing the entire namespace will
+be returned in the `value` field.  If the `key` is provided and does not
+exist in the database an error will be returned.
+
+- HTTP command:\
+  `GET /server/database/item?namespace=my_namespace&key=item.location`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "server.database.get_item", params:
+   {namespace: "my_namespace", key: "item.location"}, id: <request id>}`
+
+
+
+- Returns:\
+  An object containing the following fields:
+  ```json
+  {
+      'namespace': "requested_namespace",
+      'key': "requested_key"
+      'value': <value at key>
+  }
+  ```
+
+### Add Database Item
+Inserts an item into the database.  If the namespace does not exist
+it will be created.  If the key specifies parent objects, all parents
+will be created if they do not exist.  If the key exists it will be
+overwritten with the provided `value`.  The key parameter must be provided,
+it is not possible to assign a value directly to a namespace.
+
+- HTTP command:\
+  `POST /server/database/item?namespace=my_namespace&key=item.location&value:int=100`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "server.database.post_item", params:
+   {namespace: "my_namespace", key: "item.location", value: 100},
+   id: <request id>}`
+
+- Returns:\
+  An object containing the following fields:
+  ```json
+  {
+      'namespace': "requested_namespace",
+      'key': "requested_key"
+      'value': <the value inserted>
+  }
+  ```
+
+### Delete Database Item
+Deletes an item from the database at the specified key. If the key does not
+exist in the database an error will be returned.  If the deleted item results
+in an empty namespace, the namespace will be removed from the database.
+
+- HTTP command:\
+  `DELETE /server/database/item?namespace=my_namespace&key=item.location`
+
+- Websocket command:\
+  `{jsonrpc: "2.0", method: "server.database.delete_item", params:
+   {namespace: "my_namespace", key: "item.location"}, id: <request id>}`
+
+
+- Returns:\
+  An object containing the following fields:
+  ```json
+  {
+      'namespace': "requested_namespace",
+      'key': "requested_key"
+      'value': <value at deleted key>
+  }
+  ```
+
 ## Update Manager APIs
-The following endpoints are availabe when the `[update_manager]` plugin has
+The following endpoints are available when the `[update_manager]` plugin has
 been configured:
 
 ### Get update status
@@ -1124,6 +1418,195 @@ The APIs below are available when the `[power]` plugin has been configured.
   }
   ```
 
+## Octoprint API emulation
+Partial support of Octoprint API is implemented with the purpose of
+allowing uploading of sliced prints to a moonraker instance.
+Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
+
+### Version information
+- HTTP command:\
+  `GET /api/version`
+
+- Returns:\
+  An object containing simulated Octoprint version information
+  ```json
+  {
+    server: "1.5.0",
+    api: "0.1",
+    text: "Octoprint (Moonraker v0.3.1-12)"
+  }
+  ```
+
+### Server status
+- HTTP command:\
+  `GET /api/server`
+
+- Returns:\
+  An object containing simulated Octoprint server status
+  ```json
+  {
+    server: "1.5.0",
+    safemode: <None or "settings">
+  }
+  ```
+
+### Login verification & User information
+- HTTP command:\
+  `GET /api/login`
+
+- HTTP command:\
+  `GET /api/server`
+
+- Returns:\
+  An object containing stubbed Octoprint login/user verification
+  ```json
+  {
+    _is_external_client: false,
+    _login_mechanism: "apikey",
+    name: "_api",
+    active: true,
+    user: true,
+    admin: true,
+    apikey: null,
+    permissions: [],
+    groups: ["admins", "users"],
+  }
+  ```
+
+### Get settings
+- HTTP command:\
+  `GET /api/server`
+
+- Returns:\
+  An object containing stubbed Octoprint settings.
+  The webcam route is hardcoded to Fluidd/Mainsail default path.
+  We say we have the UFP plugin installed so that Cura-Octoprint will
+  upload in the preferred UFP format.
+  ```json
+  {
+    plugins: {
+      UltimakerFormatPackage: {
+        align_inline_thumbnail: false,
+        inline_thumbnail: false,
+        inline_thumbnail_align_value: "left",
+        inline_thumbnail_scale_value: "50",
+        installed: true,
+        installed_version: "0.2.2",
+        scale_inline_thumbnail: false,
+        state_panel_thumbnail: true
+      }
+    },
+    feature: {
+      sdSupport: false,
+      temperatureGraph: false
+    },
+    webcam: {
+      flipH: false,
+      flipV: false,
+      rotate90: false,
+      streamUrl: "/webcam/?action=stream",
+      webcamEnabled': true
+    }
+  }
+  ```
+
+### File Upload
+- HTTP command:\
+  `POST /api/files/local`
+  Otherwise identical to the standard Moonraker `POST /server/files/upload` API.
+
+### Get Job status
+- HTTP command:\
+  `GET /api/job`
+
+- Returns:\
+  An object containing stubbed Octoprint Job status
+  ```json
+  {
+    job: {
+      file: {name: null},
+      estimatedPrintTime: null,
+      filament: {length: null},
+      user: None
+    },
+    progress: {
+      completion: null,
+      filepos: null,
+      printTime: null,
+      printTimeLeft: null,
+      printTimeOrigin: null
+    },
+    state: <One of "Offline","Error", "Operational", "Printing", "Paused">
+  }
+  ```
+
+### Get Printer status
+- HTTP command:\
+  `GET /api/printer`
+
+- Returns:\
+  An object containing Octoprint Printer status
+  ```json
+  {
+    temperature: {
+      <list of heater names: "bed", "tool<n>">: {
+        actual: <actual temp>,
+        offset: 0,
+        target: <target temp>
+      }
+    },
+    state: {
+      text': state,
+      flags': {
+        operational: <bool>,
+        paused: <bool>,
+        printing: <bool>,
+        cancelling: <bool>,
+        pausing: False,
+        error: <bool>,
+        ready: <bool>,
+        closedOrError: <bool>
+      }
+    }
+  }
+  ```
+
+### Send GCode command
+- HTTP command:\
+  `POST /api/printer/command`
+
+  JSON payload with parameter:
+  * commands: List of GCode strings
+
+- Returns:\
+  An blank JSON object
+  ```json
+  {}
+  ```
+
+### List Printer profiles
+- HTTP command:\
+  `GET /api/printerprofiles`
+
+- Returns:\
+  An object containing simulates Octoprint Printer profile
+  ```json
+  {
+    profiles: {
+      _default: {
+        id: "_default",
+        name: "Default",
+        color: "default",
+        model: "Default",
+        default': true,
+        current': true,
+        heatedBed: <true if "heater_bed" heater exists>,
+        heatedChamber: <true if "chamber" heater exists>
+      }
+    }
+  }
+  ```
+
 ## Websocket notifications
 Printer generated events are sent over the websocket as JSON-RPC 2.0
 notifications.  These notifications are sent to all connected clients
@@ -1281,49 +1764,16 @@ notification is broadcast:
 Where `update_info` is an object that matches the response from an
 [update status](#get-update-status) request.
 
-## Timelapse API
-The APIs below are available when the `[timelapse]` plugin has been configured.
+### CPU Throttled
+If the system supports throttled CPU monitoring Moonraker will send the
+following notification when it detectes an active throttled condition.
 
-### Settings
-This Endpoint receive or alter Timelapse related settings during runtime (will reset to default after reboot/restart of moonraker)
-- HTTP command:\
-  `GET /machine/timelapse/settings`
-  
-  `POST /machine/timelapse/settings?enabled=true&constant_rate_factor=23&output_framerate=30&pixelformat=yuv420p&extraoutputparams=`
-  
-- Returns:\
-  the active Settings in following format:
- ```json
-{
-	"result": {
-		"enabled": true,
-		"constant_rate_factor": 23,
-		"output_framerate": 30,
-		"pixelformat": "yuv420p",
-		"extraoutputparams": ""
-	}
-}
-```
+`{jsonrpc: "2.0", method: "notify_cpu_throttled", params: [throttled_state]}`
 
-### Render
-This Endpoint restarts the Render Process of a Timelapse. So the User can Render a Timelapse if the default settings weren't optimal for the last Print / Timelapse. Warning: Start a new Print or Reboot your Raspberry will delete the Frames in the temporary folder!
-
-- HTTP command:\
-  `POST /machine/timelapse/render`
-  
-- Returns:\
- After completion (may take a while) 
- ```json
-{
-	"result": {
-		"status": "success",
-		"msg": "Rendering Video successful: timelapse_some.gcode_20210210_1514.mp4",
-		"file": "timelapse_some.gcode_20210210_1514.mp4",
-		"cmd": "ffmpeg -r 30 -i '/tmp/timelapse/frame%6d.jpg' -crf 23 -vcodec libx264 -pix_fmt yuv420p  '/home/pi/timelapse/timelapse_some.gcode_20210210_1514.mp4' -y"
-	}
-}
-```
-
+Where `throtled_state` is an object that matches the `throttled_state` in the
+response from a [process info](#get-process-info) request.  It is possible
+for clients to receive this notification multiple times if the system
+repeatedly transitions between an active and inactive throttled condition.
 
 # Appendix
 
@@ -1484,4 +1934,3 @@ function process_mesh(result) {
 // Use the array of coordinates visualize the probed area
 // or mesh..
 ```
-

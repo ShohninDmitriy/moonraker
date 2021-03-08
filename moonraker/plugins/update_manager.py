@@ -259,10 +259,15 @@ class UpdateManager:
             'github_limit_reset_time': self.gh_limit_reset_time,
             'busy': self.current_update is not None}
 
-    async def execute_cmd(self, cmd, timeout=10., notify=False, retries=1):
+    async def execute_cmd(self, cmd, timeout=10., notify=False,
+                          retries=1, env=None):
         shell_command = self.server.lookup_plugin('shell_command')
+        if env is not None:
+            os_env = dict(os.environ)
+            os_env.update(env)
+            env = os_env
         cb = self.notify_update_response if notify else None
-        scmd = shell_command.build_shell_command(cmd, callback=cb)
+        scmd = shell_command.build_shell_command(cmd, callback=cb, env=env)
         while retries:
             if await scmd.run(timeout=timeout, verbose=notify):
                 break
@@ -270,9 +275,13 @@ class UpdateManager:
         if not retries:
             raise self.server.error("Shell Command Error")
 
-    async def execute_cmd_with_response(self, cmd, timeout=10.):
+    async def execute_cmd_with_response(self, cmd, timeout=10., env=None):
         shell_command = self.server.lookup_plugin('shell_command')
-        scmd = shell_command.build_shell_command(cmd, None)
+        if env is not None:
+            os_env = dict(os.environ)
+            os_env.update(env)
+            env = os_env
+        scmd = shell_command.build_shell_command(cmd, None, env=env)
         result = await scmd.run_with_response(timeout, retries=5)
         if result is None:
             raise self.server.error(f"Error Running Command: {cmd}")
@@ -417,9 +426,10 @@ class GitUpdater:
         self.execute_cmd_with_response = umgr.execute_cmd_with_response
         self.notify_update_response = umgr.notify_update_response
         self.name = config.get_name().split()[-1]
+        self.owner = "?"
         self.repo_path = path
         if path is None:
-            self.repo_path = config.get('path')
+            self.repo_path = os.path.expanduser(config.get('path'))
         self.env = config.get("env", env)
         dist_packages = None
         if self.env is not None:
@@ -529,7 +539,7 @@ class GitUpdater:
     async def _check_version(self, need_fetch=True):
         self.is_valid = self.detached = False
         self.cur_hash = self.branch = self.remote = "?"
-        self.version = self.remote_version = "?"
+        self.version = self.remote_version = self.owner = "?"
         try:
             blist = await self.execute_cmd_with_response(
                 f"git -C {self.repo_path} branch --list")
@@ -557,9 +567,13 @@ class GitUpdater:
                     f"git -C {self.repo_path} config --get"
                     f" branch.{self.branch}.remote")
             if need_fetch:
+                env = {
+                    'GIT_HTTP_LOW_SPEED_LIMIT': "1000",
+                    'GIT_HTTP_LOW_SPEED_TIME ': "15"
+                }
                 await self.execute_cmd(
                     f"git -C {self.repo_path} fetch {self.remote} --prune -q",
-                    retries=3)
+                    timeout=20., retries=3, env=env)
             remote_url = await self.execute_cmd_with_response(
                 f"git -C {self.repo_path} remote get-url {self.remote}")
             cur_hash = await self.execute_cmd_with_response(
@@ -577,11 +591,15 @@ class GitUpdater:
             self._log_exc("Error retreiving git info")
             return
 
+        remote_url = remote_url.strip()
+        owner_match = re.match(r"https?://[^/]+/([^/]+)", remote_url)
+        if owner_match is not None:
+            self.owner = owner_match.group(1)
         self.is_dirty = repo_version.endswith("dirty")
         versions = []
         for ver in [repo_version, remote_version]:
             tag_version = "?"
-            ver_match = re.match(r"v\d+\.\d+\.\d-\d+", ver)
+            ver_match = re.match(r"v\d+\.\d+\.\d-\d+", ver.strip())
             if ver_match:
                 tag_version = ver_match.group()
             versions.append(tag_version)
@@ -629,16 +647,21 @@ class GitUpdater:
             return
         self._notify_status("Updating Repo...")
         try:
+            env = {
+                'GIT_HTTP_LOW_SPEED_LIMIT': "1000",
+                'GIT_HTTP_LOW_SPEED_TIME ': "15"
+            }
             if self.detached:
                 await self.execute_cmd(
                     f"git -C {self.repo_path} fetch {self.remote} -q",
-                    retries=3)
+                    timeout=20., retries=3, env=env)
                 await self.execute_cmd(
                     f"git -C {self.repo_path} checkout"
                     f" {self.remote}/{self.branch} -q")
             else:
                 await self.execute_cmd(
-                    f"git -C {self.repo_path} pull -q", retries=3)
+                    f"git -C {self.repo_path} pull -q", timeout=20.,
+                    retries=3, env=env)
         except Exception:
             raise self._log_exc("Error running 'git pull'")
         # Check Semantic Versions
@@ -758,6 +781,7 @@ class GitUpdater:
         return {
             'remote_alias': self.remote,
             'branch': self.branch,
+            'owner': self.owner,
             'version': self.version,
             'remote_version': self.remote_version,
             'current_hash': self.cur_hash,
@@ -841,7 +865,7 @@ class WebUpdater:
         self.server = umgr.server
         self.notify_update_response = umgr.notify_update_response
         self.repo = config.get('repo').strip().strip("/")
-        self.name = self.repo.split("/")[-1]
+        self.owner, self.name = self.repo.split("/", 1)
         if hasattr(config, "get_name"):
             self.name = config.get_name().split()[-1]
         self.path = os.path.realpath(os.path.expanduser(
@@ -931,6 +955,8 @@ class WebUpdater:
         if self.version == self.remote_version:
             # Already up to date
             return
+        self.notify_update_response(f"Downloading Client: {self.name}")
+        archive = await self.umgr.http_download_request(self.dl_url)
         with tempfile.TemporaryDirectory(
                 suffix=self.name, prefix="client") as tempdir:
             if os.path.isdir(self.path):
@@ -943,8 +969,6 @@ class WebUpdater:
                         shutil.move(src_path, dest_dir)
                 shutil.rmtree(self.path)
             os.mkdir(self.path)
-            self.notify_update_response(f"Downloading Client: {self.name}")
-            archive = await self.umgr.http_download_request(self.dl_url)
             with zipfile.ZipFile(io.BytesIO(archive)) as zf:
                 zf.extractall(self.path)
             # Move temporary files back into
@@ -964,6 +988,7 @@ class WebUpdater:
     def get_update_status(self):
         return {
             'name': self.name,
+            'owner': self.owner,
             'version': self.version,
             'remote_version': self.remote_version
         }
