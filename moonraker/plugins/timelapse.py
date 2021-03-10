@@ -18,6 +18,9 @@ class Timelapse:
         self.renderisrunning = False
         self.takingframe = False
         self.framecount = 0
+        self.lastcmdreponse = ""
+
+        # get config
         self.enabled = config.getboolean("enabled", True)
         self.crf = config.getint("constant_rate_factor", 23)
         self.framerate = config.getint("output_framerate", 30)
@@ -27,11 +30,13 @@ class Timelapse:
         self.pixelformat = config.get("pixelformat", "yuv420p")
         self.extraoutputparams = config.get("extraoutputparams", "")
         out_dir_cfg = config.get("output_path", "~/timelapse/")
-        self.out_dir = os.path.expanduser(out_dir_cfg)
-        self.temp_dir = "/tmp/timelapse/"
-        self.lastcmdreponse = ""
+        temp_dir_cfg = config.get("snapshot_path", "/tmp/timelapse/")
 
         # setup directories
+        out_dir_cfg = os.path.join(out_dir_cfg, '') # make sure there is a trailing "/"
+        temp_dir_cfg = os.path.join(temp_dir_cfg, '')
+        self.out_dir = os.path.expanduser(out_dir_cfg) # evaluate and expand "~"
+        self.temp_dir = os.path.expanduser(temp_dir_cfg)
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.out_dir, exist_ok=True)
 
