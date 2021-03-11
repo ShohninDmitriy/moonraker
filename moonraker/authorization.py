@@ -28,9 +28,17 @@ class Authorization:
         self.access_tokens = {}
 
         # Get allowed cors domains
+        self.cors_domains = []
         cors_cfg = config.get('cors_domains', "").strip()
-        self.cors_domains = [d.strip().replace(".", "\\.").replace("*", ".*")
-                             for d in cors_cfg.split('\n')if d.strip()]
+        cds = [d.strip() for d in cors_cfg.split('\n')if d.strip()]
+        for domain in cds:
+            bad_match = re.search(r"^.+\.[^:]*\*", domain)
+            if bad_match is not None:
+                raise config.error(
+                    f"Unsafe CORS Domain '{domain}'.  Wildcards are not"
+                    " permitted in the top level domain.")
+            self.cors_domains.append(
+                domain.replace(".", "\\.").replace("*", ".*"))
 
         # Get Trusted Clients
         self.trusted_ips = []
@@ -185,7 +193,7 @@ class Authorization:
         return False
 
     def check_cors(self, origin, request=None):
-        if origin is None:
+        if origin is None or not self.cors_domains:
             return False
         for regex in self.cors_domains:
             match = re.match(regex, origin)
@@ -198,6 +206,21 @@ class Authorization:
                 else:
                     logging.debug(f"Partial Cors Match: {match.group()}")
         else:
+            # Check to see if the origin contains an IP that matches a
+            # current trusted connection
+            match = re.search(r"^https?://([^/:]+)", origin)
+            if match is not None:
+                ip = match.group(1)
+                try:
+                    ipaddr = ipaddress.ip_address(ip)
+                except ValueError:
+                    pass
+                else:
+                    if self._check_authorized_ip(ipaddr):
+                        logging.debug(
+                            f"Cors request matched trusted IP: {ip}")
+                        self._set_cors_headers(origin, request)
+                        return True
             logging.debug(f"No CORS match for origin: {origin}\n"
                           f"Patterns: {self.cors_domains}")
         return False
