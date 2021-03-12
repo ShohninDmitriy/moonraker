@@ -19,6 +19,7 @@ class Timelapse:
         self.takingframe = False
         self.framecount = 0
         self.lastcmdreponse = ""
+        self.lastframefile = ""
 
         # get config
         self.enabled = config.getboolean("enabled", True)
@@ -44,6 +45,7 @@ class Timelapse:
         self.server = config.get_server()
         file_manager = self.server.lookup_plugin("file_manager")
         file_manager.register_directory("timelapse", self.out_dir)
+        file_manager.register_directory("snapshots", self.temp_dir)
         self.server.register_notification("timelapse:timelapse_event")
         self.server.register_event_handler(
             "server:gcode_response", self.handle_status_update)
@@ -54,6 +56,15 @@ class Timelapse:
         self.server.register_endpoint(
             "/machine/timelapse/settings", ['GET', 'POST'],
             self.webrequest_timelapse_settings)
+        self.server.register_endpoint(
+            "/machine/timelapse/lastframeinfo", ['GET'], 
+            self.webrequest_timelapse_lastframeinfo)
+
+    async def webrequest_timelapse_lastframeinfo(self, webrequest):
+        return {
+                'framecount': self.framecount,
+                'lastframefile': self.lastframefile                
+            }
 
     async def webrequest_timelapse_settings(self, webrequest):
         action = webrequest.get_action()
@@ -94,6 +105,7 @@ class Timelapse:
             framefile = "frame" + str(self.framecount).zfill(6) + ".jpg"
             cmd = "wget " + self.snapshoturl + " -O " \
                   + self.temp_dir + framefile
+            self.lastframefile = framefile
             logging.debug(f"cmd: {cmd}")
 
             shell_command = self.server.lookup_plugin('shell_command')
@@ -140,6 +152,7 @@ class Timelapse:
             for filepath in filelist:
                 os.remove(filepath)
         self.framecount = 0
+        self.lastframefile = ""
 
     async def timelapse_render(self, webrequest=None):
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
