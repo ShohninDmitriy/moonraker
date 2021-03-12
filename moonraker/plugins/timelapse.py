@@ -59,7 +59,7 @@ class Timelapse:
         action = webrequest.get_action()
         if action == 'POST':
             args = webrequest.get_args()
-            # logging.info("webreq_args: " + str(args))
+            logging.debug("webreq_args: " + str(args))
             for arg in args:
                 val = args.get(arg)
                 if arg == "enabled":
@@ -84,8 +84,8 @@ class Timelapse:
         if self.enabled:
             ioloop = IOLoop.current()
             ioloop.spawn_callback(self.timelapse_newframe)
-        # else:
-            # logging.info("NEW_FRAME macro ignored timelapse is disabled")
+        else:
+            logging.debug("NEW_FRAME macro ignored timelapse is disabled")
 
     async def timelapse_newframe(self):
         if not self.takingframe:
@@ -94,7 +94,7 @@ class Timelapse:
             framefile = "frame" + str(self.framecount).zfill(6) + ".jpg"
             cmd = "wget " + self.snapshoturl + " -O " \
                   + self.temp_dir + framefile
-            # logging.info(f"cmd: {cmd}")
+            logging.debug(f"cmd: {cmd}")
 
             shell_command = self.server.lookup_plugin('shell_command')
             scmd = shell_command.build_shell_command(cmd, None)
@@ -134,7 +134,7 @@ class Timelapse:
                 ioloop.spawn_callback(self.timelapse_render)
 
     def timelapse_cleanup(self):
-        # logging.info("timelapse_cleanup")
+        logging.debug("timelapse_cleanup")
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         if filelist:
             for filepath in filelist:
@@ -142,7 +142,6 @@ class Timelapse:
         self.framecount = 0
 
     async def timelapse_render(self, webrequest=None):
-        # logging.info("timelapse_render")
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         self.framecount = len(filelist)
         if not filelist:
@@ -174,7 +173,6 @@ class Timelapse:
             result = await klippy_apis.query_objects({'print_stats': None})
             pstats = result.get("print_stats", {})
             gcodefile = pstats.get("filename", "")  # .split(".", 1)[0]
-            # logging.info(f"gcodefile: {gcodefile}")
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
             inputfiles = self.temp_dir + "frame%6d.jpg"
@@ -227,14 +225,14 @@ class Timelapse:
             }
 
     def ffmpeg_response(self, response):
-        # logging.info(f"ffmpegResponse: {response}")
+        # logging.debug(f"ffmpegResponse: {response}")
         self.lastcmdreponse = response.decode("utf-8")
         try:
             frame = re.search('(?<=frame=  )(\d+)(?=.+fps)', self.lastcmdreponse).group()
         except AttributeError:
             return
         percent = int(frame) / self.framecount * 100
-        # logging.info(f"ffmpeg Progress: {int(percent)}% ")
+        # logging.debug(f"ffmpeg Progress: {int(percent)}% ")
         result = {
                 'action': 'render',
                 'status': 'running',
@@ -243,7 +241,7 @@ class Timelapse:
         self.notify_timelapse_event(result)
 
     def notify_timelapse_event(self, result):
-        # logging.info(f"notify_timelapse_event: {result}")
+        logging.debug(f"notify_timelapse_event: {result}")
         self.server.send_event("timelapse:timelapse_event", result)
 
 
