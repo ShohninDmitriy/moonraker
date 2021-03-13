@@ -58,14 +58,14 @@ class Timelapse:
             "/machine/timelapse/settings", ['GET', 'POST'],
             self.webrequest_timelapse_settings)
         self.server.register_endpoint(
-            "/machine/timelapse/lastframeinfo", ['GET'], 
+            "/machine/timelapse/lastframeinfo", ['GET'],
             self.webrequest_timelapse_lastframeinfo)
 
     async def webrequest_timelapse_lastframeinfo(self, webrequest):
         return {
-                'framecount': self.framecount,
-                'lastframefile': self.lastframefile                
-            }
+            'framecount': self.framecount,
+            'lastframefile': self.lastframefile
+        }
 
     async def webrequest_timelapse_settings(self, webrequest):
         action = webrequest.get_action()
@@ -85,12 +85,12 @@ class Timelapse:
                 if arg == "extraoutputparams":
                     self.extraoutputparams = webrequest.get(arg)
         return {
-                'enabled': self.enabled,
-                'constant_rate_factor': self.crf,
-                'output_framerate': self.framerate,
-                'pixelformat': self.pixelformat,
-                'extraoutputparams': self.extraoutputparams
-            }
+            'enabled': self.enabled,
+            'constant_rate_factor': self.crf,
+            'output_framerate': self.framerate,
+            'pixelformat': self.pixelformat,
+            'extraoutputparams': self.extraoutputparams
+        }
 
     def call_timelapse_newframe(self):
         if self.enabled:
@@ -119,10 +119,10 @@ class Timelapse:
             result = {'action': 'newframe'}
             if cmdstatus:
                 result.update({
-                                'frame': self.framecount,
-                                'framefile': framefile,
-                                'status': 'success'
-                            })
+                    'frame': self.framecount,
+                    'framefile': framefile,
+                    'status': 'success'
+                })
             else:
                 logging.info(f"getting newframe failed: {cmd}")
                 self.framecount -= 1
@@ -163,7 +163,11 @@ class Timelapse:
             logging.info(msg)
             status = "skipped"
             cmd = outfile = None
-            result = {'action': 'render', 'status': status}
+            result = {
+                'action': 'render',
+                'status': status,
+                'reason': msg
+            }
             self.notify_timelapse_event(result)
         elif self.renderisrunning:
             msg = "render is already running"
@@ -173,15 +177,15 @@ class Timelapse:
         else:
             self.renderisrunning = True
             result = {
-                        'action': 'render',
-                        'status': 'started',
-                        'framecount': self.framecount,
-                        'settings': {
-                            'framerate': self.framerate,
-                            'crf': self.crf,
-                            'pixelformat': self.pixelformat
-                        }
-                    }
+                'action': 'render',
+                'status': 'started',
+                'framecount': self.framecount,
+                'settings': {
+                    'framerate': self.framerate,
+                    'crf': self.crf,
+                    'pixelformat': self.pixelformat
+                }
+            }
             self.notify_timelapse_event(result)
             klippy_apis = self.server.lookup_plugin("klippy_apis")
             result = await klippy_apis.query_objects({'print_stats': None})
@@ -214,47 +218,50 @@ class Timelapse:
                 status = "success"
                 msg = f"Rendering Video successful: {outfile}"
                 result = {
-                        'action': 'render',
-                        'status': 'success',
-                        'filename': outfile
-                    }
+                    'action': 'render',
+                    'status': 'success',
+                    'filename': outfile
+                }
             else:
                 status = "error"
                 response = self.lastcmdreponse
                 msg = f"Rendering Video failed: {response}"
                 result = {
-                        'action': 'render',
-                        'status': 'error',
-                        'response': response
-                    }
+                    'action': 'render',
+                    'status': 'error',
+                    'response': response
+                }
 
             self.notify_timelapse_event(result)
             self.renderisrunning = False
 
         return {
-                'status': status,
-                'msg': msg,
-                'file': outfile,
-                'cmd': cmd
-            }
+            'status': status,
+            'msg': msg,
+            'file': outfile,
+            'cmd': cmd
+        }
 
     def ffmpeg_response(self, response):
         # logging.debug(f"ffmpegResponse: {response}")
         self.lastcmdreponse = response.decode("utf-8")
         try:
-            frame = re.search('(?<=frame=)*(\d+)(?=.+fps)', self.lastcmdreponse).group()
+            frame = re.search(
+                '(?<=frame=)*(\d+)(?=.+fps)',
+                self.lastcmdreponse
+           	).group()
         except AttributeError:
             return
-        percent = int(frame) / self.framecount * 100        
-                
+        percent = int(frame) / self.framecount * 100
+
         if self.lastrenderprogress != int(percent):
             self.lastrenderprogress = int(percent)
             # logging.debug(f"ffmpeg Progress: {self.lastrenderprogress}% ")
             result = {
-                    'action': 'render',
-                    'status': 'running',
-                    'progress': self.lastrenderprogress
-                }
+                'action': 'render',
+                'status': 'running',
+                'progress': self.lastrenderprogress
+            }
             self.notify_timelapse_event(result)
 
     def notify_timelapse_event(self, result):
