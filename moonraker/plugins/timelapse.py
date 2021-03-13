@@ -20,6 +20,7 @@ class Timelapse:
         self.framecount = 0
         self.lastcmdreponse = ""
         self.lastframefile = ""
+        self.lastrenderprogress = 0
 
         # get config
         self.enabled = config.getboolean("enabled", True)
@@ -241,17 +242,20 @@ class Timelapse:
         # logging.debug(f"ffmpegResponse: {response}")
         self.lastcmdreponse = response.decode("utf-8")
         try:
-            frame = re.search('(?<=frame=  )(\d+)(?=.+fps)', self.lastcmdreponse).group()
+            frame = re.search('(?<=frame=)*(\d+)(?=.+fps)', self.lastcmdreponse).group()
         except AttributeError:
             return
-        percent = int(frame) / self.framecount * 100
-        # logging.debug(f"ffmpeg Progress: {int(percent)}% ")
-        result = {
-                'action': 'render',
-                'status': 'running',
-                'progress': int(percent)
-            }
-        self.notify_timelapse_event(result)
+        percent = int(frame) / self.framecount * 100        
+                
+        if self.lastrenderprogress != int(percent):
+            self.lastrenderprogress = int(percent)
+            # logging.debug(f"ffmpeg Progress: {self.lastrenderprogress}% ")
+            result = {
+                    'action': 'render',
+                    'status': 'running',
+                    'progress': self.lastrenderprogress
+                }
+            self.notify_timelapse_event(result)
 
     def notify_timelapse_event(self, result):
         logging.debug(f"notify_timelapse_event: {result}")
