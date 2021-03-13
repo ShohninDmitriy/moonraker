@@ -31,7 +31,7 @@ class Timelapse:
         self.pixelformat = config.get("pixelformat", "yuv420p")
         self.extraoutputparams = config.get("extraoutputparams", "")
         out_dir_cfg = config.get("output_path", "~/timelapse/")
-        temp_dir_cfg = config.get("snapshot_path", "/tmp/timelapse/")
+        temp_dir_cfg = config.get("frame_path", "/tmp/timelapse/")
 
         # setup directories
         out_dir_cfg = os.path.join(out_dir_cfg, '') # make sure there is a trailing "/"
@@ -45,7 +45,7 @@ class Timelapse:
         self.server = config.get_server()
         file_manager = self.server.lookup_plugin("file_manager")
         file_manager.register_directory("timelapse", self.out_dir)
-        file_manager.register_directory("snapshots", self.temp_dir)
+        file_manager.register_directory("timelapse_frames", self.temp_dir)
         self.server.register_notification("timelapse:timelapse_event")
         self.server.register_event_handler(
             "server:gcode_response", self.handle_status_update)

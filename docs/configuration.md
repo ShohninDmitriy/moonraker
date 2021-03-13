@@ -436,8 +436,8 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 ##   Output framerate of the generated video
 #output_path: ~/timelapse/
 ##   Path where the generated video will be saved
-#snapshot_path: /tmp/timelapse/
-##   Path where the temporary snapshots are saved
+#frame_path: /tmp/timelapse/
+##   Path where the temporary frames are saved
 #time_format_code: %Y%m%d_%H%M
 ##   Manipulates datetime format of the output filename
 ##   see: https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
