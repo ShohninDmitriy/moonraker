@@ -455,6 +455,7 @@ class GitUpdater:
         self.debug = self.cmd_helper.is_debug_enabled()
         self.env = config.get("env", env)
         dist_packages = None
+        self.python_reqs = None
         if self.env is not None:
             self.env = os.path.expanduser(self.env)
             dist_packages = config.get('python_dist_packages', None)
@@ -572,6 +573,8 @@ class GitUpdater:
         if self.repo.is_current():
             # No need to update
             return
+        package_mtime = self._get_file_mtime(self.install_script)
+        pyreqs_mtime = self._get_file_mtime(self.python_reqs)
         self._notify_status("Updating Repo...")
         try:
             if self.repo.is_detached():
@@ -587,13 +590,13 @@ class GitUpdater:
         # Check Semantic Versions
         vinfo = self._get_version_info()
         cur_version = vinfo.get('version', ())
-        update_deps |= cur_version < vinfo.get('deps_version', ())
         need_env_rebuild = cur_version < vinfo.get('env_version', ())
-        if update_deps:
+        if update_deps or self._check_need_update(
+                package_mtime, self.install_script):
             await self._install_packages()
+        if update_deps or self._check_need_update(
+                pyreqs_mtime, self.python_reqs):
             await self._update_virtualenv(need_env_rebuild)
-        elif need_env_rebuild:
-            await self._update_virtualenv(True)
         # Refresh local repo state
         await self._update_repo_state(need_fetch=False)
         if self.name == "moonraker":
@@ -605,6 +608,17 @@ class GitUpdater:
         else:
             await self.restart_service()
             self._notify_status("Update Finished...", is_complete=True)
+
+    def _get_file_mtime(self, filename):
+        if filename is None or not os.path.isfile(filename):
+            return None
+        return os.path.getmtime(filename)
+
+    def _check_need_update(self, prev_mtime, filename):
+        cur_mtime = self._get_file_mtime(filename)
+        if prev_mtime is None or cur_mtime is None:
+            return False
+        return cur_mtime != prev_mtime
 
     async def _install_packages(self):
         if self.install_script is None:
@@ -696,6 +710,10 @@ class GitUpdater:
             await self.cmd_helper.run_cmd(
                 f"sudo systemctl restart {self.name}")
         except Exception:
+            if self.name == "moonraker":
+                # We will always get an error when restarting moonraker
+                # from within the child process, so ignore it
+                return
             raise self._log_exc("Error restarting service")
 
     def get_update_status(self):
@@ -710,6 +728,9 @@ GIT_FETCH_ENV_VARS = {
     'GIT_HTTP_LOW_SPEED_LIMIT': "1000",
     'GIT_HTTP_LOW_SPEED_TIME ': "15"
 }
+GIT_MAX_LOG_CNT = 100
+GIT_LOG_FMT = \
+    "\"sha:%H%x1Dauthor:%an%x1Ddate:%ct%x1Dsubject:%s%x1Dmessage:%b%x1E\""
 
 class GitRepo:
     def __init__(self, cmd_helper, git_path, alias):
@@ -730,6 +751,7 @@ class GitRepo:
         self.branches = []
         self.dirty = False
         self.head_detached = False
+        self.commits_behind = []
 
         self.init_condition = None
         self.git_operation_lock = Lock()
@@ -774,6 +796,15 @@ class GitRepo:
                 f"{self.git_remote}/{self.git_branch} "
                 "--always --tags --long")
 
+            # Store current remote in the database if in a detached state
+            if self.head_detached:
+                database = self.server.lookup_plugin("database")
+                db_key = f"update_manager.git_repo_{self.alias}" \
+                    ".detached_remote"
+                database.insert_item(
+                    "moonraker", db_key,
+                    [self.current_commit, self.git_remote, self.git_branch])
+
             # Parse GitHub Owner from URL
             owner_match = re.match(r"https?://[^/]+/([^/]+)", self.upstream_url)
             self.git_owner = "?"
@@ -790,6 +821,22 @@ class GitRepo:
                     tag_version = ver_match.group()
                 versions.append(tag_version)
             self.current_version, self.upstream_version = versions
+
+            # Get Commits Behind
+            self.commits_behind = []
+            cbh = await self.get_commits_behind()
+            if cbh:
+                tagged_commits = await self.get_tagged_commits()
+                debug_msg = '\n'.join([f"{k}: {v}" for k, v in
+                                       tagged_commits.items()])
+                logging.debug(f"Git Repo {self.alias}: Tagged Commits\n"
+                              f"{debug_msg}")
+                for i, commit in enumerate(cbh):
+                    tag = tagged_commits.get(commit['sha'], None)
+                    if i < 30 or tag is not None:
+                        commit['tag'] = tag
+                        self.commits_behind.append(commit)
+
             self.log_repo_info()
         except Exception:
             logging.exception(f"Git Repo {self.alias}: Initialization failure")
@@ -804,6 +851,11 @@ class GitRepo:
 
     async def update_repo_status(self):
         async with self.git_operation_lock:
+            if not os.path.isdir(os.path.join(self.git_path, ".git")):
+                logging.info(
+                    f"Git Repo {self.alias}: path '{self.git_path}'"
+                    " is not a valid git repo")
+                return False
             try:
                 resp = await self.cmd_helper.run_cmd_with_response(
                     f"{self.git_cmd} status -u no")
@@ -822,7 +874,17 @@ class GitRepo:
                 if len(bparts) == 2:
                     self.git_remote, self.git_branch = bparts
                 else:
-                    if self.git_remote == "?":
+                    database = self.server.lookup_plugin("database")
+                    db_key = f"update_manager.git_repo_{self.alias}" \
+                        ".detached_remote"
+                    detached_remote = database.get_item(
+                        "moonraker", db_key, ("", "?"))
+                    if detached_remote[0].startswith(branch_info):
+                        self.git_remote = detached_remote[1]
+                        self.git_branch = detached_remote[2]
+                        msg = "Using remote stored in database:"\
+                            f" {self.git_remote}/{self.git_branch}"
+                    elif self.git_remote == "?":
                         msg = "Resolve by manually checking out" \
                             " a branch via SSH."
                     else:
@@ -849,7 +911,8 @@ class GitRepo:
             f"Current Version: {self.current_version}\n"
             f"Upstream Version: {self.upstream_version}\n"
             f"Is Dirty: {self.dirty}\n"
-            f"Is Detached: {self.head_detached}")
+            f"Is Detached: {self.head_detached}\n"
+            f"Commits Behind: {len(self.commits_behind)}")
 
     def report_invalids(self, valid_origin):
         invalids = []
@@ -869,8 +932,7 @@ class GitRepo:
     def _verify_repo(self, check_remote=False):
         if not self.valid_git_repo:
             raise self.server.error(
-                f"Git Repo {self.alias}: '{self.git_path}' "
-                "not a git repository")
+                f"Git Repo {self.alias}: repo not initialized")
         if check_remote:
             if self.git_remote == "?":
                 raise self.server.error(
@@ -941,6 +1003,48 @@ class GitRepo:
             await self.cmd_helper.run_cmd_with_response(
                 f"{self.git_cmd} checkout {branch} -q")
 
+    async def get_commits_behind(self):
+        self._verify_repo()
+        if self.is_current():
+            return []
+        async with self.git_operation_lock:
+            branch = f"{self.git_remote}/{self.git_branch}"
+            resp = await self.cmd_helper.run_cmd_with_response(
+                f"{self.git_cmd} log {self.current_commit}..{branch} "
+                f"--format={GIT_LOG_FMT} --max-count={GIT_MAX_LOG_CNT}")
+            commits_behind = []
+            for log_entry in resp.split('\x1E'):
+                log_entry = log_entry.strip()
+                if not log_entry:
+                    continue
+                log_items = [li.strip() for li in log_entry.split('\x1D')
+                             if li.strip()]
+                commits_behind.append(
+                    dict([li.split(':', 1) for li in log_items]))
+            return commits_behind
+
+    async def get_tagged_commits(self):
+        self._verify_repo()
+        async with self.git_operation_lock:
+            resp = await self.cmd_helper.run_cmd_with_response(
+                f"{self.git_cmd} show-ref --tags -d")
+            tagged_commits = {}
+            tags = [tag.strip() for tag in resp.split('\n') if tag.strip()]
+            for tag in tags:
+                sha, ref = tag.split(' ', 1)
+                ref = ref.split('/')[-1]
+                if ref[-3:] == "^{}":
+                    # Dereference this commit and overwrite any existing tag
+                    ref = ref[:-3]
+                    tagged_commits[ref] = sha
+                elif ref not in tagged_commits:
+                    # This could be a lightweight tag pointing to a commit.  If
+                    # it is an annotated tag it will be overwritten by the
+                    # dereferenced tag
+                    tagged_commits[ref] = sha
+            # Return tagged commits as SHA keys mapped to tag values
+            return {v: k for k, v in tagged_commits.items()}
+
     def get_repo_status(self):
         return {
             'remote_alias': self.git_remote,
@@ -951,7 +1055,8 @@ class GitRepo:
             'current_hash': self.current_commit,
             'remote_hash': self.upstream_commit,
             'is_dirty': self.dirty,
-            'detached': self.head_detached
+            'detached': self.head_detached,
+            'commits_behind': self.commits_behind
         }
 
     def get_version(self, upstream=False):

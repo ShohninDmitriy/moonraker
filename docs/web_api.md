@@ -1454,9 +1454,6 @@ Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
 - HTTP command:\
   `GET /api/login`
 
-- HTTP command:\
-  `GET /api/server`
-
 - Returns:\
   An object containing stubbed Octoprint login/user verification
   ```json
@@ -1475,7 +1472,7 @@ Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
 
 ### Get settings
 - HTTP command:\
-  `GET /api/server`
+  `GET /api/settings`
 
 - Returns:\
   An object containing stubbed Octoprint settings.
@@ -1606,6 +1603,92 @@ Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
     }
   }
   ```
+
+## History APIs
+The APIs below are avilable when the `[history]` plugin has been configured.
+
+### Get job list
+- HTTP command:\
+  `GET /server/history/list?limit=50&start=50&since=1&before=5`
+
+- Websocket command:\
+  `{"jsonrpc":"2.0","method":"server.history.list","id":"1","params":{}}`
+
+  All arguments are optional. Arguments are as follows:
+  - `before` All jobs before this UNIX timestamp
+  - `limit` Number of prints to return
+  - `since` All jobs after this UNIX timestamp
+  - `start` Record number to start from (i.e. 10 would start at the 10th print)
+
+- Returns an array of jobs that have been printed
+  ```json
+  {
+      count: <number of prints>,
+      jobs: [
+        {
+            "job_id": <unique job id>,
+            "end_time": <end_time>,
+            "filament_used": <filament_used>,
+            "filename": <filename>,
+            "metadata": {}, // Object containing metadata at time of job
+            "print_duration": <print_duration>,
+            "status": <status>,
+            "start_time": <start_time>,
+            "total_duration": <total_duration>
+        },
+        ...
+      ]
+  }
+  ```
+
+### Get a single job
+- HTTP command:\
+  `GET /server/history/job?uid=<id>`
+
+- Websocket command:\
+  `{"jsonrpc":"2.0","method":"server.history.get_job","id":"1",
+  "params":{"uid": <id>}}`
+
+- Returns:
+  Data associated with the job ID in the following format:
+  ```json
+  {
+      "job": {
+        "job_id": <unique job id>,
+        "end_time": <end_time>,
+        "filament_used": <filament_used>,
+        "filename": <filename>,
+        "metadata": {}, // Object containing metadata at time of job
+        "print_duration": <print_duration>,
+        "status": <status>,
+        "start_time": <start_time>,
+        "total_duration": <total_duration>
+      }
+  }
+  ```
+
+### Delete job
+- HTTP command:\
+  `DELETE /server/history/job?uid=<id>`
+
+  Note: it is possible to replace the "uid" argument with `all=true`
+  to delete all jobs.
+
+- Websocket command:\
+  `{"jsonrpc":"2.0","method":"server.history.delete_job","id":"1",
+  "params":{"uid": <id>}}`
+
+  Note: it is possible to replace the "uid" argument with `"all": true`
+  to delete all jobs.
+
+- Returns an array of deleted ids
+```json
+[
+    id1,
+    id2,
+    ...
+]
+```
 
 ## Websocket notifications
 Printer generated events are sent over the websocket as JSON-RPC 2.0
@@ -1775,6 +1858,21 @@ response from a [process info](#get-process-info) request.  It is possible
 for clients to receive this notification multiple times if the system
 repeatedly transitions between an active and inactive throttled condition.
 
+### History Changed
+If the `[history]` module is enabled the following notification is sent when
+a job is added or finished:
+
+`{jsonrpc: "2.0", method: "notify_history_changed", params: [history_state]}`
+
+Where `history_state` is an object in the following format:
+```json
+{
+    "action": "added" or "finished",
+    "job": <job object>
+}
+```
+The `job` field matches the object returned when requesting
+[job data](#get-a-single-job).
 # Appendix
 
 ## Websocket setup
