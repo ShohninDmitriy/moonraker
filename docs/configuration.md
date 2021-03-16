@@ -431,8 +431,8 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 # moonraker.conf
 
 [timelapse]
-#enabled: true
-##   If this set to false the Gcode macros are ignored and
+#enabled: True
+##   If this set to False the Gcode macros are ignored and
 ##   the autorender on print finish is also deactivated.
 ##   The idea is to disable the plugin by default and only activate 
 ##   it during runtime via the http endpoint if a timelapse is desired
