@@ -139,6 +139,11 @@ class FileManager:
     def get_fixed_path_args(self):
         return dict(self.fixed_path_args)
 
+    def check_file_exists(self, root, filename):
+        root_dir = self.file_paths.get(root, "")
+        file_path = os.path.join(root_dir, filename)
+        return os.path.exists(file_path)
+
     async def _handle_filelist_request(self, web_request):
         root = web_request.get_str('root', "gcodes")
         return self.get_file_list(root, list_format=True, notify=True)
@@ -622,6 +627,7 @@ class FileManager:
 
 METADATA_PRUNE_TIME = 600000
 METADATA_NAMESPACE = "gcode_metadata"
+METADATA_VERSION = 3
 
 class MetadataStorage:
     def __init__(self, server, gc_path, database):
@@ -629,6 +635,14 @@ class MetadataStorage:
         database.register_local_namespace(METADATA_NAMESPACE)
         self.mddb = database.wrap_namespace(
             METADATA_NAMESPACE, parse_keys=False)
+        version = database.get_item(
+            "moonraker", "file_manager.metadata_version", 0)
+        if version != METADATA_VERSION:
+            # Clear existing metadata when version is bumped
+            self.mddb.clear()
+            database.insert_item(
+                "moonraker", "file_manager.metadata_version",
+                METADATA_VERSION)
         self.pending_requests = {}
         self.events = {}
         self.busy = False
@@ -657,7 +671,7 @@ class MetadataStorage:
         for fname in list(self.mddb.keys()):
             fpath = os.path.join(self.gc_path, fname)
             if not os.path.exists(fpath):
-                del self.mddb[fname]
+                self.remove_file(fname)
                 logging.info(f"Pruned file: {fname}")
                 continue
 
@@ -666,10 +680,21 @@ class MetadataStorage:
         return mdata['size'] == fsize and mdata['modified'] == modified
 
     def remove_file(self, fname):
-        try:
-            del self.mddb[fname]
-        except Exception:
-            pass
+        metadata = self.mddb.pop(fname, None)
+        if metadata is None:
+            return
+        # Delete associated thumbnails
+        fdir = os.path.dirname(os.path.join(self.gc_path, fname))
+        if "thumbnails" in metadata:
+            for thumb in metadata["thumbnails"]:
+                path = thumb.get("relative_path", None)
+                if path is None:
+                    continue
+                thumb_path = os.path.join(fdir, path)
+                try:
+                    os.remove(thumb_path)
+                except Exception:
+                    logging.debug(f"Error removing thumb at {thumb_path}")
 
     def parse_metadata(self, fname, fsize, modified, notify=False):
         evt = Event()
@@ -702,7 +727,12 @@ class MetadataStorage:
                 else:
                     break
             else:
-                self.mddb[fname] = {'size': fsize, 'modified': modified}
+                self.mddb[fname] = {
+                    'size': fsize,
+                    'modified': modified,
+                    'print_start_time': None,
+                    'job_id': None
+                }
                 logging.info(
                     f"Unable to extract medatadata from file: {fname}")
             evt.set()
@@ -729,6 +759,7 @@ class MetadataStorage:
         if not metadata:
             # This indicates an error, do not add metadata for this
             raise self.server.error("Unable to extract metadata")
+        metadata.update({'print_start_time': None, 'job_id': None})
         self.mddb[path] = dict(metadata)
         metadata['filename'] = path
         if notify:

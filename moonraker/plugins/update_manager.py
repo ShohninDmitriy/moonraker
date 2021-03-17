@@ -449,6 +449,7 @@ class GitUpdater:
         self.name = config.get_name().split()[-1]
         if path is None:
             path = os.path.expanduser(config.get('path'))
+        self.primary_branch = config.get("primary_branch", "master")
         self.repo_path = path
         self.repo = GitRepo(cmd_helper, path, self.name)
         self.init_evt = Event()
@@ -547,7 +548,7 @@ class GitUpdater:
     async def _update_repo_state(self, need_fetch=True):
         self.is_valid = False
         await self.repo.initialize(need_fetch=need_fetch)
-        invalids = self.repo.report_invalids(self.origin)
+        invalids = self.repo.report_invalids(self.origin, self.primary_branch)
         if invalids:
             msgs = '\n'.join(invalids)
             self._log_info(
@@ -856,6 +857,7 @@ class GitRepo:
                     f"Git Repo {self.alias}: path '{self.git_path}'"
                     " is not a valid git repo")
                 return False
+            await self._wait_for_lock_release()
             try:
                 resp = await self.cmd_helper.run_cmd_with_response(
                     f"{self.git_cmd} status -u no")
@@ -914,16 +916,17 @@ class GitRepo:
             f"Is Detached: {self.head_detached}\n"
             f"Commits Behind: {len(self.commits_behind)}")
 
-    def report_invalids(self, valid_origin):
+    def report_invalids(self, valid_origin, primary_branch):
         invalids = []
         upstream_url = self.upstream_url.lower()
         if upstream_url[-4:] != ".git":
             upstream_url += ".git"
         if upstream_url != valid_origin:
             invalids.append(f"Unofficial remote url: {self.upstream_url}")
-        if self.git_branch != "master" or self.git_remote != "origin":
+        if self.git_branch != primary_branch or self.git_remote != "origin":
             invalids.append(
-                "Repo not on default remote branch: "
+                "Repo not on valid remote branch, expected: "
+                f"origin/{primary_branch}, detected: "
                 f"{self.git_remote}/{self.git_branch}")
         if self.head_detached:
             invalids.append("Detached HEAD detected")
@@ -1072,10 +1075,37 @@ class GitRepo:
     def is_current(self):
         return self.current_commit == self.upstream_commit
 
+    def _check_lock_file_exists(self, remove=False):
+        lock_path = os.path.join(self.git_path, ".git/index.lock")
+        if os.path.isfile(lock_path):
+            if remove:
+                logging.info(f"Git Repo {self.alias}: Git lock file found "
+                             "after git process exited, removing")
+                try:
+                    os.remove(lock_path)
+                except Exception:
+                    pass
+            return True
+        return False
+
+    async def _wait_for_lock_release(self, timeout=60):
+        while timeout:
+            if self._check_lock_file_exists():
+                if not timeout % 10:
+                    logging.info(f"Git Repo {self.alias}: Git lock file "
+                                 f"exists, {timeout} seconds remaining "
+                                 "before removal.")
+                await tornado.gen.sleep(1.)
+                timeout -= 1
+            else:
+                return
+        self._check_lock_file_exists(remove=True)
+
     async def _do_fetch_pull(self, cmd, retries=5):
         # Fetch and pull require special handling.  If the request
         # gets delayed we do not want to terminate it while the command
         # is processing.
+        await self._wait_for_lock_release()
         env = os.environ.copy()
         env.update(GIT_FETCH_ENV_VARS)
         scmd = self.cmd_helper.build_shell_command(
@@ -1095,6 +1125,8 @@ class GitRepo:
             if ret == 0:
                 return
             retries -= 1
+            await tornado.gen.sleep(.5)
+            self._check_lock_file_exists(remove=True)
         raise self.server.error(f"Git Command '{cmd}' failed")
 
     def _handle_process_output(self, output):
