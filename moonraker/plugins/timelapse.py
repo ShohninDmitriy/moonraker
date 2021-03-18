@@ -18,7 +18,6 @@ class Timelapse:
         self.renderisrunning = False
         self.takingframe = False
         self.framecount = 0
-        self.lastcmdreponse = ""
         self.lastframefile = ""
         self.lastrenderprogress = 0
 
@@ -158,39 +157,25 @@ class Timelapse:
     async def timelapse_render(self, webrequest=None):
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         self.framecount = len(filelist)
+        result = {'action': 'render'}
         if not filelist:
             msg = "no frames to render skipping"
-            logging.info(msg)
             status = "skipped"
             cmd = outfile = None
-            result = {
-                'action': 'render',
-                'status': status,
-                'reason': msg
-            }
-            self.notify_timelapse_event(result)
         elif self.renderisrunning:
             msg = "render is already running"
-            logging.info(msg)
             status = "alreadyrunning"
             cmd = outfile = None
         else:
             self.renderisrunning = True
-            result = {
-                'action': 'render',
-                'status': 'started',
-                'framecount': self.framecount,
-                'settings': {
-                    'framerate': self.framerate,
-                    'crf': self.crf,
-                    'pixelformat': self.pixelformat
-                }
-            }
-            self.notify_timelapse_event(result)
+
+            # get  printed filename
             klippy_apis = self.server.lookup_plugin("klippy_apis")
-            result = await klippy_apis.query_objects({'print_stats': None})
-            pstats = result.get("print_stats", {})
+            kresult = await klippy_apis.query_objects({'print_stats': None})
+            pstats = kresult.get("print_stats", {})
             gcodefile = pstats.get("filename", "")  # .split(".", 1)[0]
+
+            # build shell command
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
             inputfiles = self.temp_dir + "frame%6d.jpg"
@@ -205,7 +190,21 @@ class Timelapse:
                   + " -an" \
                   + " " + self.extraoutputparams \
                   + " '" + self.out_dir + outfile + "' -y"
-            logging.info(f"start FFMPEG: {cmd}")
+
+            # log and notify ws
+            logging.debug(f"start FFMPEG: {cmd}")
+            result.update({
+                'status': 'started',
+                'framecount': self.framecount,
+                'settings': {
+                    'framerate': self.framerate,
+                    'crf': self.crf,
+                    'pixelformat': self.pixelformat
+                }
+            })
+            self.notify_timelapse_event(result)
+
+            # run the command
             shell_command = self.server.lookup_plugin("shell_command")
             scmd = shell_command.build_shell_command(cmd, self.ffmpeg_response)
             try:
@@ -217,34 +216,30 @@ class Timelapse:
             if cmdstatus:
                 status = "success"
                 msg = f"Rendering Video successful: {outfile}"
-                result = {
-                    'action': 'render',
-                    'status': 'success',
+                result.update({
                     'filename': outfile
-                }
+                })
+                result.pop("framecount")
+                result.pop("settings")
             else:
                 status = "error"
-                response = self.lastcmdreponse
-                msg = f"Rendering Video failed: {response}"
-                result = {
-                    'action': 'render',
-                    'status': 'error',
-                    'response': response
-                }
+                msg = f"Rendering Video failed"
 
-            self.notify_timelapse_event(result)
             self.renderisrunning = False
 
-        return {
+        # log and notify ws
+        logging.debug(msg)
+        result.update({
             'status': status,
-            'msg': msg,
-            'file': outfile,
-            'cmd': cmd
-        }
+            'msg': msg
+        })
+        self.notify_timelapse_event(result)
+
+        return result
 
     def ffmpeg_response(self, response):
         # logging.debug(f"ffmpegResponse: {response}")
-        self.lastcmdreponse = response.decode("utf-8")
+        lastcmdreponse = response.decode("utf-8")
         try:
             frame = re.search(
                 '(?<=frame=)*(\d+)(?=.+fps)',
