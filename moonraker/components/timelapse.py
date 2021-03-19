@@ -246,8 +246,7 @@ class Timelapse:
         lastcmdreponse = response.decode("utf-8")
         try:
             frame = re.search(
-                '(?<=frame=)*(\d+)(?=.+fps)',
-                self.lastcmdreponse
+                '(?<=frame=)*(\d+)(?=.+fps)', lastcmdreponse
            	).group()
         except AttributeError:
             return
