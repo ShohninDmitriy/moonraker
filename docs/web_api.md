@@ -2421,7 +2421,7 @@ or render is already running
 {
 	"result": {
 		"action": "render",
-		"status": "skipped",
+		"status": "running",
 		"msg": "render is already running"
 	}
 }

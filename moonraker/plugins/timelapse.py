@@ -168,7 +168,7 @@ class Timelapse:
             cmd = outfile = None
         elif self.renderisrunning:
             msg = "render is already running"
-            status = "alreadyrunning"
+            status = "running"
             cmd = outfile = None
         else:
             self.renderisrunning = True
