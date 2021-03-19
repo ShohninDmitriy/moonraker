@@ -479,14 +479,15 @@ Note: You can add extra gcode to the macro if you like to move your
 printhead to a specific position, before taking a picture.
 
 ### Add the macro to your Slicer:
-Add the ``TIMELAPSE_TAKE_FRAME`` macro to your slicer, so it's getting added before or after a layer change. 
-```TIMELAPSE_TAKE_FRAME```
+Add the ``TIMELAPSE_TAKE_FRAME`` macro to your slicer, so it's getting added before or after a layer change.
 
 #### Prusa Slicer
 Printer Settings -> Custom G-code -> Before layer change Gcode -> ``TIMELAPSE_TAKE_FRAME``
+
 ![PrusaSlicer Configuration](assets/img/timelapse-PS-config.png)
 
 #### Ultimaker Cura
-Extensions -> Post Processing -> Modify G-Code
+Extensions -> Post Processing -> Modify G-Code ->   
 Add a script -> Insert at layer change -> G-code to insert = ``TIMELAPSE_TAKE_FRAME``
+
 ![PCura Configuration](assets/img/timelapse-cura-config.png)
