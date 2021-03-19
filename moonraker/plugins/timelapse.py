@@ -23,6 +23,7 @@ class Timelapse:
 
         # get config
         self.enabled = config.getboolean("enabled", True)
+        self.autorender = config.getboolean("autorender", True)
         self.crf = config.getint("constant_rate_factor", 23)
         self.framerate = config.getint("output_framerate", 30)
         self.timeformatcode = config.get("time_format_code", "%Y%m%d_%H%M")
@@ -75,6 +76,8 @@ class Timelapse:
                 val = args.get(arg)
                 if arg == "enabled":
                     self.enabled = webrequest.get_boolean(arg)
+                if arg == "autorender":
+                    self.autorender = webrequest.get_boolean(arg)
                 if arg == "constant_rate_factor":
                     self.crf = webrequest.get_int(arg)
                 if arg == "output_framerate":
@@ -85,6 +88,7 @@ class Timelapse:
                     self.extraoutputparams = webrequest.get(arg)
         return {
             'enabled': self.enabled,
+            'autorender': self.autorender,
             'constant_rate_factor': self.crf,
             'output_framerate': self.framerate,
             'pixelformat': self.pixelformat,
@@ -141,7 +145,7 @@ class Timelapse:
             self.timelapse_cleanup()
         elif status == "Done printing file":
             # print_done
-            if self.enabled:
+            if self.enabled and self.autorender:
                 ioloop = IOLoop.current()
                 ioloop.spawn_callback(self.timelapse_render)
 

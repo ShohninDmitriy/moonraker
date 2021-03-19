@@ -436,9 +436,11 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 [timelapse]
 #enabled: True
 ##   If this set to False the Gcode macros are ignored and
-##   the autorender on print finish is also deactivated.
+##   the autorender is disabled at the end of the print.
 ##   The idea is to disable the plugin by default and only activate 
-##   it during runtime via the http endpoint if a timelapse is desired
+##   it during runtime via the http endpoint if a timelapse is desired.
+#autorender: True
+##   If this is set to False, the autorender is disabled at the end of the print.
 #constant_rate_rate: 23
 ##   The range of the CRF scale is 0–51, where 0 is lossless,
 ##   23 is the default, and 51 is worst quality possible. 
