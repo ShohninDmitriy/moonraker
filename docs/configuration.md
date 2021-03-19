@@ -407,7 +407,7 @@ install_script:
 #  The default is no install script, which disables system package updates
 ```
 
-## Timelapse Plugin
+## `[Timelapse]`
 Generate Timelapse of a Print
 
 This Plugin depends on FFMPEG and mjpegstreamer installed on the System which
@@ -430,7 +430,7 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 
 
 ### Activate and configure the plugin adding following to your moonraker.conf:
-```
+```ini
 # moonraker.conf
 
 [timelapse]
@@ -466,18 +466,27 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 ##   eg rotate video by 180° "-vf transpose=2,transpose=2"
 ```
 
-### Add the macro to your printer.cfg:
-```
+### Define the Gcode Macro:
+Add the macro to your printer.cfg
+```ini
 # printer.cfg
 
 [gcode_macro TIMELAPSE_TAKE_FRAME]
 gcode:
  {action_call_remote_method("timelapse_newframe")}
 ```
-Note: You can add extra gcode to the TAKE_FRAME macro if you like to move your
+Note: You can add extra gcode to the macro if you like to move your
 printhead to a specific position, before taking a picture.
 
 ### Add the macro to your Slicer:
-``TIMELAPSE_TAKE_FRAME`` -> to before or after Layerchange (where you like the snapshot should be taken)
+Add the ``TIMELAPSE_TAKE_FRAME`` macro to your slicer, so it's getting added before or after a layer change. 
+```TIMELAPSE_TAKE_FRAME```
 
+#### Prusa Slicer
+Printer Settings -> Custom G-code -> Before layer change Gcode -> ``TIMELAPSE_TAKE_FRAME``
 ![PrusaSlicer Configuration](assets/img/timelapse-PS-config.png)
+
+#### Ultimaker Cura
+Extensions -> Post Processing -> Modify G-Code
+Add a script -> Insert at layer change -> G-code to insert = ``TIMELAPSE_TAKE_FRAME``
+![PCura Configuration](assets/img/timelapse-cura-config.png)
