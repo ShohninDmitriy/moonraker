@@ -44,7 +44,7 @@ class Timelapse:
 
         # setup eventhandlers and endpoints
         self.server = config.get_server()
-        file_manager = self.server.lookup_plugin("file_manager")
+        file_manager = self.server.lookup_component("file_manager")
         file_manager.register_directory("timelapse", self.out_dir)
         file_manager.register_directory("timelapse_frames", self.temp_dir)
         self.server.register_notification("timelapse:timelapse_event")
@@ -112,7 +112,7 @@ class Timelapse:
             self.lastframefile = framefile
             logging.debug(f"cmd: {cmd}")
 
-            shell_command = self.server.lookup_plugin('shell_command')
+            shell_command = self.server.lookup_component('shell_command')
             scmd = shell_command.build_shell_command(cmd, None)
             try:
                 cmdstatus = await scmd.run(timeout=2., verbose=False)
@@ -174,7 +174,7 @@ class Timelapse:
             self.renderisrunning = True
 
             # get  printed filename
-            klippy_apis = self.server.lookup_plugin("klippy_apis")
+            klippy_apis = self.server.lookup_component("klippy_apis")
             kresult = await klippy_apis.query_objects({'print_stats': None})
             pstats = kresult.get("print_stats", {})
             gcodefile = pstats.get("filename", "")  # .split(".", 1)[0]
@@ -209,7 +209,7 @@ class Timelapse:
             self.notify_timelapse_event(result)
 
             # run the command
-            shell_command = self.server.lookup_plugin("shell_command")
+            shell_command = self.server.lookup_component("shell_command")
             scmd = shell_command.build_shell_command(cmd, self.ffmpeg_response)
             try:
                 cmdstatus = await scmd.run(timeout=None, verbose=True)
@@ -268,5 +268,5 @@ class Timelapse:
         self.server.send_event("timelapse:timelapse_event", result)
 
 
-def load_plugin(config):
+def load_component(config):
     return Timelapse(config)
