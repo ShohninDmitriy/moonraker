@@ -26,6 +26,9 @@ class Timelapse:
         self.autorender = config.getboolean("autorender", True)
         self.crf = config.getint("constant_rate_factor", 23)
         self.framerate = config.getint("output_framerate", 30)
+        self.variablefps = config.getboolean("variablefps", False)
+        self.targetlength = config.getint("targetlength", 60)
+        self.min_framerate = config.getint("min_framerate", 5)
         self.timeformatcode = config.get("time_format_code", "%Y%m%d_%H%M")
         self.snapshoturl = config.get(
             "snapshoturl", "http://localhost:8080/?action=snapshot")
@@ -86,13 +89,22 @@ class Timelapse:
                     self.pixelformat = webrequest.get(arg)
                 if arg == "extraoutputparams":
                     self.extraoutputparams = webrequest.get(arg)
+                if arg == "variablefps":
+                    self.variablefps = webrequest.get_boolean(arg)
+                if arg == "targetlength":
+                    self.targetlength = webrequest.get_int(arg)
+                if arg == "min_framerate":
+                    self.min_framerate = webrequest.get_int(arg)
         return {
             'enabled': self.enabled,
             'autorender': self.autorender,
             'constant_rate_factor': self.crf,
             'output_framerate': self.framerate,
             'pixelformat': self.pixelformat,
-            'extraoutputparams': self.extraoutputparams
+            'extraoutputparams': self.extraoutputparams,
+            'variablefps': self.variablefps,
+            'targetlength': self.targetlength,
+            'min_framerate': self.min_framerate
         }
 
     def call_timelapse_newframe(self):
@@ -179,6 +191,13 @@ class Timelapse:
             pstats = kresult.get("print_stats", {})
             gcodefile = pstats.get("filename", "")  # .split(".", 1)[0]
 
+            # variable framerate
+            if self.variablefps:
+                fps = int(self.framecount / self.targetlength)
+                fps = max(min(fps, self.framerate), self.min_framerate)
+            else:
+                fps = self.framerate
+
             # build shell command
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
@@ -186,7 +205,7 @@ class Timelapse:
             outsuffix = ".mp4"
             outfile = "timelapse_" + gcodefile + "_" + date_time + outsuffix
             cmd = "ffmpeg" \
-                  + " -r " + str(self.framerate) \
+                  + " -r " + str(fps) \
                   + " -i '" + inputfiles + "'" \
                   + " -crf " + str(self.crf) \
                   + " -vcodec libx264" \
