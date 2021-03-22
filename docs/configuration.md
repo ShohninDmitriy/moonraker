@@ -485,6 +485,9 @@ printhead to a specific position, before taking a picture.
 ### Add the macro to your Slicer:
 Add the ``TIMELAPSE_TAKE_FRAME`` macro to your slicer so that it is added to the Gcode before or after a layer change.
 
+Note: Also add the macro to your End G-code to get a extra "finished print"
+frame.
+
 #### Prusa Slicer
 Printer Settings -> Custom G-code -> Before layer change Gcode -> ``TIMELAPSE_TAKE_FRAME``
 
