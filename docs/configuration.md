@@ -441,7 +441,7 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 ##   it during runtime via the http endpoint if a timelapse is desired.
 #autorender: True
 ##   If this is set to False, the autorender is disabled at the end of the print.
-#constant_rate_rate: 23
+#constant_rate_factor: 23
 ##   The range of the CRF scale is 0–51, where 0 is lossless,
 ##   23 is the default, and 51 is worst quality possible. 
 ##   A lower value generally leads to higher quality, and a 
