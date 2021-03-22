@@ -466,6 +466,8 @@ https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimen
 ##   here you can extra output parameters to FFMPEG 
 ##   further info: https://ffmpeg.org/ffmpeg.html 
 ##   eg rotate video by 180° "-vf transpose=2,transpose=2"
+##   or repeat last frame for 5 seconds:
+##   -filter_complex "[0]trim=0:5[hold];[0][hold]concat[extended];[extended][0]overlay"
 ```
 
 ### Define the Gcode Macro:
