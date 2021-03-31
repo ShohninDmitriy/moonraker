@@ -12,10 +12,11 @@ from tornado import gen
 from utils import ServerError
 
 class ShellCommandError(ServerError):
-    def __init__(self, message, return_code, err_output=(b"", b""),
-                 status_code=400):
+    def __init__(self, message, return_code, stdout=b"",
+                 stderr=b"", status_code=500):
         super().__init__(message, status_code=status_code)
-        self.stdout, self.stderr = err_output
+        self.stdout = stdout or b""
+        self.stderr = stderr or b""
         self.return_code = return_code
 
 class SCProcess(asyncio.subprocess.Process):
@@ -47,12 +48,14 @@ class SCProcess(asyncio.subprocess.Process):
         transport.close()
         return output
 
-    async def cancel(self):
+    async def cancel(self, sig_idx=1):
         if self.cancel_requested:
             return
         self.cancel_requested = True
         exit_success = False
-        for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]:
+        sig_idx = min(2, max(0, sig_idx))
+        sigs = [signal.SIGINT, signal.SIGTERM, signal.SIGKILL][sig_idx:]
+        for sig in sigs:
             self.send_signal(sig)
             try:
                 ret = self.wait()
@@ -89,8 +92,11 @@ class SCProcess(asyncio.subprocess.Process):
         await self.wait()
 
 class ShellCommand:
+    IDX_SIGINT = 0
+    IDX_SIGTERM = 1
+    IDX_SIGKILL_= 2
     def __init__(self, cmd, std_out_callback, std_err_callback,
-                 env=None, log_stderr=False):
+                 env=None, log_stderr=False, cwd=None):
         self.name = cmd
         self.std_out_cb = std_out_callback
         self.std_err_cb = std_err_callback
@@ -98,14 +104,15 @@ class ShellCommand:
         self.command = shlex.split(cmd)
         self.log_stderr = log_stderr
         self.env = env
+        self.cwd = cwd
         self.proc = None
         self.cancelled = False
         self.return_code = None
 
-    async def cancel(self):
+    async def cancel(self, sig_idx=1):
         self.cancelled = True
         if self.proc is not None:
-            await self.proc.cancel()
+            await self.proc.cancel(sig_idx)
 
     def get_return_code(self):
         return self.return_code
@@ -114,7 +121,8 @@ class ShellCommand:
         self.return_code = self.proc = None
         self.cancelled = False
 
-    async def run(self, timeout=2., verbose=True, log_complete=True):
+    async def run(self, timeout=2., verbose=True, log_complete=True,
+                  sig_idx=1):
         self._reset_command_data()
         if not timeout:
             # Never timeout
@@ -133,13 +141,13 @@ class ShellCommand:
             await asyncio.wait_for(ret, timeout=timeout)
         except asyncio.TimeoutError:
             complete = False
-            await self.proc.cancel()
+            await self.proc.cancel(sig_idx)
         else:
             complete = not self.cancelled
         return self._check_proc_success(complete, log_complete)
 
     async def run_with_response(self, timeout=2., retries=1,
-                                log_complete=True):
+                                log_complete=True, sig_idx=1):
         self._reset_command_data()
         retries = max(1, retries)
         while retries > 0:
@@ -151,7 +159,7 @@ class ShellCommand:
                         ret, timeout=timeout)
                 except asyncio.TimeoutError:
                     complete = False
-                    await self.proc.cancel()
+                    await self.proc.cancel(sig_idx)
                 else:
                     complete = not self.cancelled
                     if self.log_stderr and stderr:
@@ -166,7 +174,7 @@ class ShellCommand:
             await gen.sleep(.5)
         raise ShellCommandError(
             f"Error running shell command: '{self.command}'",
-            self.return_code, err_output=(stdout, stderr))
+            self.return_code, stdout, stderr)
 
     async def _create_subprocess(self):
         loop = asyncio.get_event_loop()
@@ -182,7 +190,7 @@ class ShellCommand:
             transport, protocol = await loop.subprocess_exec(
                 protocol_factory, *self.command,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=errpipe, env=self.env)
+                stderr=errpipe, env=self.env, cwd=self.cwd)
             self.proc = SCProcess(transport, protocol, loop)
             self.proc.initialize(self.command[0], self.std_out_cb,
                                  self.std_err_cb, self.log_stderr)
@@ -211,8 +219,9 @@ class ShellCommand:
 class ShellCommandFactory:
     error = ShellCommandError
     def build_shell_command(self, cmd, callback=None, std_err_callback=None,
-                            env=None, log_stderr=False):
-        return ShellCommand(cmd, callback, std_err_callback, env, log_stderr)
+                            env=None, log_stderr=False, cwd=None):
+        return ShellCommand(cmd, callback, std_err_callback, env,
+                            log_stderr, cwd)
 
 def load_component(config):
     return ShellCommandFactory()
