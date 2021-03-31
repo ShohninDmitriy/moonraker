@@ -36,6 +36,14 @@ class Timelapse:
         self.extraoutputparams = config.get("extraoutputparams", "")
         out_dir_cfg = config.get("output_path", "~/timelapse/")
         temp_dir_cfg = config.get("frame_path", "/tmp/timelapse/")
+        self.ffmpeg_binary_path = config.get("ffmpeg_binary_path", "/usr/bin/ffmpeg")
+
+        # check if ffmpeg is installed
+        self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
+        if not self.ffmpeg_installed:
+            self.autorender = False
+            logging.info(f"timelapse: {self.ffmpeg_binary_path} \
+                        not found please install to use render functionality")
 
         # setup directories
         out_dir_cfg = os.path.join(out_dir_cfg, '') # make sure there is a trailing "/"
@@ -81,7 +89,7 @@ class Timelapse:
                 val = args.get(arg)
                 if arg == "enabled":
                     self.enabled = webrequest.get_boolean(arg)
-                if arg == "autorender":
+                if arg == "autorender" and self.ffmpeg_installed:
                     self.autorender = webrequest.get_boolean(arg)
                 if arg == "constant_rate_factor":
                     self.crf = webrequest.get_int(arg)
@@ -179,15 +187,22 @@ class Timelapse:
     async def timelapse_render(self, webrequest=None):
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         self.framecount = len(filelist)
+
         result = {'action': 'render'}
+
         if not filelist:
-            msg = "no frames to render skipping"
+            msg = "no frames to render, skip"
             status = "skipped"
             cmd = outfile = None
         elif self.renderisrunning:
             msg = "render is already running"
             status = "running"
             cmd = outfile = None
+        elif not self.ffmpeg_installed:
+            msg = f"{self.ffmpeg_binary_path} not found, please install ffmpeg"
+            status = "error"
+            cmd = outfile = None
+            logging.info(f"timelapse: {msg}")
         else:
             self.renderisrunning = True
 
@@ -210,15 +225,15 @@ class Timelapse:
             inputfiles = self.temp_dir + "frame%6d.jpg"
             outsuffix = ".mp4"
             outfile = "timelapse_" + gcodefile + "_" + date_time + outsuffix
-            cmd = "ffmpeg" \
-                  + " -r " + str(fps) \
-                  + " -i '" + inputfiles + "'" \
-                  + " -crf " + str(self.crf) \
-                  + " -vcodec libx264" \
-                  + " -pix_fmt " + self.pixelformat \
-                  + " -an" \
-                  + " " + self.extraoutputparams \
-                  + " '" + self.out_dir + outfile + "' -y"
+            cmd = self.ffmpeg_binary_path \
+                + " -r " + str(fps) \
+                + " -i '" + inputfiles + "'" \
+                + " -crf " + str(self.crf) \
+                + " -vcodec libx264" \
+                + " -pix_fmt " + self.pixelformat \
+                + " -an" \
+                + " " + self.extraoutputparams \
+                + " '" + self.out_dir + outfile + "' -y"
 
             # log and notify ws
             logging.debug(f"start FFMPEG: {cmd}")
@@ -235,9 +250,9 @@ class Timelapse:
 
             # run the command
             shell_command = self.server.lookup_component("shell_command")
-            scmd = shell_command.build_shell_command(cmd, self.ffmpeg_response)
+            scmd = shell_command.build_shell_command(cmd, self.ffmpeg_cb)
             try:
-                cmdstatus = await scmd.run(timeout=None, verbose=True)
+                cmdstatus = await scmd.run(timeout=None, verbose=True, log_complete=False)
             except Exception:
                 logging.exception(f"Error running cmd '{cmd}'")
 
@@ -253,11 +268,14 @@ class Timelapse:
             else:
                 status = "error"
                 msg = f"Rendering Video failed"
+                result.update({
+                    'cmd': cmd
+                })
 
             self.renderisrunning = False
 
         # log and notify ws
-        logging.debug(msg)
+        logging.info(msg)
         result.update({
             'status': status,
             'msg': msg
@@ -266,8 +284,8 @@ class Timelapse:
 
         return result
 
-    def ffmpeg_response(self, response):
-        # logging.debug(f"ffmpegResponse: {response}")
+    def ffmpeg_cb(self, response):
+        # logging.debug(f"ffmpeg_cb: {response}")
         lastcmdreponse = response.decode("utf-8")
         try:
             frame = re.search(
