@@ -55,6 +55,8 @@ class Timelapse:
             "server:gcode_response", self.handle_status_update)
         self.server.register_remote_method(
             "timelapse_newframe", self.call_timelapse_newframe)
+        self.server.register_remote_method(
+            "timelapse_render", self.call_timelapse_render)
         self.server.register_endpoint(
             "/machine/timelapse/render", ['POST'], self.timelapse_render)
         self.server.register_endpoint(
@@ -169,6 +171,10 @@ class Timelapse:
                 os.remove(filepath)
         self.framecount = 0
         self.lastframefile = ""
+
+    def call_timelapse_render(self):
+        ioloop = IOLoop.current()
+        ioloop.spawn_callback(self.timelapse_render)
 
     async def timelapse_render(self, webrequest=None):
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
