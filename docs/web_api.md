@@ -163,6 +163,12 @@ JSON-RPC request:
     "id": 4564
 }
 ```
+
+!!! note
+    This endpoint will immediately halt the printer and put it in a "shutdown"
+    state.  It should be used to implement an "emergency stop" button and
+    also used if a user enters `M112`(emergency stop) via a console.
+
 Returns:
 
 `ok`
@@ -409,7 +415,11 @@ An object containing various fields that report server state.
         "power"
     ],
     "failed_components": [],
-    "registered_directories": ["config", "gcodes", "config_examples", "docs"]
+    "registered_directories": ["config", "gcodes", "config_examples", "docs"],
+    "warnings": [
+        "Invalid config option 'api_key_path' detected in section [authorization]. Remove the option to resolve this issue. In the future this will result in a startup error.",
+        "Unparsed config section [fake_section] detected.  This may be the result of a component that failed to load.  In the future this will result in a startup error."
+    ]
   }
 ```
 !!! warning
@@ -659,6 +669,14 @@ JSON-RPC request:
     "id": 7466}
 ```
 
+!!! warning
+    When `M112`(emergency stop) is requested via this endpoint it will not
+    immediately stop the printer. `M112` will be placed on the gcode queue and
+    executed after all previous gcodes are complete.  If a client detects
+    `M112` via user input (such as a console) it should request the
+    `/printer/emergency_stop` endpoint to immediately halt the printer.  This
+    may be done in addition to sending the `M112` gcode if desired.
+
 Returns:
 
 `ok` when the gcode has completed execution.
@@ -773,6 +791,64 @@ Returns:
 
 ### Machine Commands
 
+#### Get System Info
+HTTP request:
+```http
+GET /machine/system_info
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "machine.system_info",
+    "id": 4665
+}
+```
+Returns: Information about the host system in the following format:
+```json
+{
+    "system_info": {
+        "available_services": ["moonraker", "klipper"],
+        "cpu_info": {
+            "cpu_count": 1,
+            "bits": "32bit",
+            "processor": "armv6l",
+            "cpu_desc": "ARMv6-compatible processor rev 7 (v6l)",
+            "hardware_desc": "BCM2835",
+            "model": "Raspberry Pi Zero W Rev 1.1",
+            "total_memory": 439276,
+            "memory_units": "kB"
+        },
+        "sd_info": {
+            "manufacturer_id": "03",
+            "manufacturer": "Sandisk",
+            "oem_id": "5344",
+            "product_name": "SS08G",
+            "product_revision": "8.0",
+            "serial_number": "00112233",
+            "manufacturer_date": "9/2017",
+            "capacity": "7.4 GiB",
+            "total_bytes": 7948206080
+        },
+        "distribution": {
+            "name": "Raspbian GNU/Linux 10 (buster)",
+            "id": "raspbian",
+            "version": "10",
+            "version_parts": {
+                "major": "10",
+                "minor": "",
+                "build_number": ""
+            },
+            "like": "debian",
+            "codename": "buster"
+        }
+    }
+}
+```
+
+!!! note
+   If no SD Card is detected the `sd_info` field will contain an empty object.
+
 #### Shutdown the Operating System
 HTTP request:
 ```http
@@ -811,7 +887,8 @@ and the socket connection will drop.
 
 #### Restart a system service
 Restarts a system service via `sudo systemctl restart {name}`. Currently
-only the `moonraker`, `klipper`, and `webcamd` services are supported.
+the `moonraker`, `klipper`, `MoonCord`, `KlipperScreen` and `webcamd`
+services are supported.
 
 HTTP request:
 ```http
@@ -920,7 +997,8 @@ An object in the following format:
     "throttled_state": {
         "bits": 0,
         "flags": []
-    }
+    },
+    "cpu_temp": 46.148
 }
 ```
 Process information is sampled every second.  The `moonraker_stats` field
@@ -955,6 +1033,10 @@ The first four flags indicate an active throttling condition,
 whereas the last four indicate a previous condition (may or
 may not still be active).  If `vcgencmd` is not available
 `throttled_state` will report `null`.
+
+If the system reports CPU temp at `/sys/class/thermal/thermal_zone0`
+then temperature will be supplied in the `cpu_temp` field.  Otherwise
+the field will be set to `null`.
 
 ### File Operations
 
@@ -1008,27 +1090,27 @@ A list of objects, where each object contains file data.
 ```json
 [
     {
-        "filename": "3DBenchy_0.15mm_PLA_MK3S_2h6m.gcode",
+        "path": "3DBenchy_0.15mm_PLA_MK3S_2h6m.gcode",
         "modified": 1615077020.2025201,
         "size": 4926481
     },
     {
-        "filename": "Shape-Box_0.2mm_PLA_Ender2_20m.gcode",
+        "path": "Shape-Box_0.2mm_PLA_Ender2_20m.gcode",
         "modified": 1614910966.946807,
         "size": 324236
     },
     {
-        "filename": "test_dir/A-Wing.gcode",
+        "path": "test_dir/A-Wing.gcode",
         "modified": 1605202259,
         "size": 1687387
     },
     {
-        "filename": "test_dir/CE2_CubeTest.gcode",
+        "path": "test_dir/CE2_CubeTest.gcode",
         "modified": 1614644445.4025,
         "size": 1467339
     },
     {
-        "filename": "test_dir/V350_Engine_Block_-_2_-_Scaled.gcode",
+        "path": "test_dir/V350_Engine_Block_-_2_-_Scaled.gcode",
         "modified": 1615768477.5133543,
         "size": 189713016
     },
@@ -1084,15 +1166,13 @@ modified time, and size.
             "width": 32,
             "height": 32,
             "size": 2596,
-            "data": "{base64_data}"
-            "relative_path": "thumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-32x32.png"
+            "relative_path": ".thumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-32x32.png"
         },
         {
             "width": 400,
             "height": 300,
             "size": 73308,
-            "data": "{base64_data}",
-            "relative_path": "thumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-400x300.png"
+            "relative_path": "lthumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-400x300.png"
         }
     ],
     "first_layer_bed_temp": 60,
@@ -1106,11 +1186,6 @@ modified time, and size.
     The `print_start_time` and `job_id` fields are initialized to
     `null`.  They will be updated for each print job if the user has the
     `[history]` component configured
-
-!!! warning
-    The `data` field for each thumbnail is deprecated and will be removed
-    in a future release.  Clients should retrieve the png directly using the
-    `relative_path` field.
 
 #### Get directory information
 Returns a list of files and subdirectories given a supplied path.
@@ -1211,9 +1286,16 @@ JSON-RPC request:
 }
 ```
 
-Returns:
-
-`ok`
+Returns: Information about the created directory
+```json
+{
+    "item": {
+        "path": "gcodes/testdir",
+        "root": "gcodes"
+    },
+    "action": "create_dir"
+}
+```
 
 #### Delete directory
 Deletes a directory at the specified path.
@@ -1238,9 +1320,16 @@ JSON-RPC request:
     If the specified directory contains files then the delete request
     will fail unless the `force` argument is set to `true`.
 
-Returns:
-
-`ok`
+Returns:  Information about the deleted directory
+```json
+{
+    "item": {
+        "path": "gcodes/testdir",
+        "root": "gcodes"
+    },
+    "action": "delete_dir"
+}
+```
 
 #### Move a file or directory
 Moves a file or directory from one location to another. The following
@@ -1277,9 +1366,22 @@ JSON-RPC request:
 }
 ```
 
-Returns:
-
-`ok`
+Returns:  Information about the moved file or directory
+```json
+{
+    "result": {
+        "item": {
+            "root": "gcodes",
+            "path": "test4/test3"
+        },
+        "source_item": {
+            "path": "gcodes/test4/test3",
+            "root": "gcodes"
+        },
+        "action": "move_dir"
+    }
+}
+```
 
 #### Copy a file or directory
 Copies a file or directory from one location to another.  A successful copy has
@@ -1304,9 +1406,16 @@ JSON-RPC request:
 }
 ```
 
-Returns:
-
-`ok`
+Returns: Information about the copied file or directory
+```json
+{
+    "item": {
+        "root": "gcodes",
+        "path": "test4/Voron_v2_350_aferburner_Filament Cover_0.2mm_ABS.gcode"
+    },
+    "action": "create_file"
+}
+```
 
 #### File download
 Retreives file `filename` at root `root`.  The `filename` must include
@@ -1333,40 +1442,48 @@ below.
 HTTP request:
 ```http
 POST /server/files/upload`
+Content-Type: multipart/form-data
+
+------FormBoundaryemap3PkuvKX0B3HH
+Content-Disposition: form-data; name="file"; filename="myfile.gcode"
+Content-Type: application/octet-stream
+
+<binary data>
+------FormBoundaryemap3PkuvKX0B3HH--
 ```
 
 The file must be uploaded in the request's body `multipart/form-data` (ie:
-`<input type="file">`).  The following fields may also be added to the form:
+`<input type="file">`).  The following arguments may also be added to the
+form-data:
 
 - `root`: The root location in which to upload the file.  Currently this may
-be `gcodes` or `config`.  If not specified the default is `gcodes`.
+  be `gcodes` or `config`.  If not specified the default is `gcodes`.
 - `path`: This argument may contain a path (relative to the root) indicating
-a subdirectory to which the file is written. If a `path` is present the
-server will attempt to create any subdirectories that do not exist.
+  a subdirectory to which the file is written. If a `path` is present the
+  server will attempt to create any subdirectories that do not exist.
+- `checksum`: A SHA256 hex digest calculated by the client for the uploaded
+  file.  If this argument is supplied the server will compare it to its own
+  checksum calculation after the upload has completed.  A checksum mismatch
+  will result in a 422 error.
 
 Arguments available only for the `gcodes` root:
 
 - `print`: If set to "true", Klippy will attempt to start the print after
-uploading.  Note that this value should be a string type, not boolean. This
-provides compatibility with Octoprint's legacy upload API.
+  uploading.  Note that this value should be a string type, not boolean. This
+  provides compatibility with Octoprint's legacy upload API.
 
 JSON-RPC request: Not Available
 
-Returns:
-
-The name of the uploaded file.
+Returns:  Information about the uploaded file.  Note that `print_started`
+is only included when the supplied root is set to `gcodes`.
 ```json
 {
-    "result": "{file_name}"
-}
-```
-
-If the supplied root is "gcodes", a "print_started" field is also
-returned.
-```json
-{
-    "result": "{file_name}",
-    "print_started": false
+    "item": {
+        "path": "Lock Body Shim 1mm_0.2mm_FLEX_MK3S_2h30m.gcode",
+        "root": "gcodes"
+    },
+    "print_started": false,
+    "action": "create_file"
 }
 ```
 
@@ -1389,9 +1506,16 @@ JSON-RPC request:
     "id": 1323
 }
 ```
-Returns:
-
-The name of the deleted file
+Returns:  Information about the deleted file
+```json
+{
+    "item": {
+        "path": "Lock Body Shim 1mm_0.2mm_FLEX_MK3S_2h30m.gcode",
+        "root": "gcodes"
+    },
+    "action": "delete_file"
+}
+```
 
 #### Download klippy.log
 HTTP request:
@@ -1417,9 +1541,242 @@ The requested file
 
 ### Authorization
 
-Untrusted Clients must use a key to access the API by including it in the
-`X-Api-Key` header for each HTTP Request.  The APIs below allow authorized
-clients to request or modify the current API Key.
+The Authorization endpoints are enabled when the user has the
+`[authorization]` component configured in `moonraker.conf`.
+
+Untrusted clients must use either a JSON Web Token or an API key to access
+Moonraker's HTTP APIs.  JWTs should be included in the `Authorization`
+header as a `Bearer` type for each HTTP request.  If using an API Key it
+should be included in the `X-Api-Key` header for each HTTP Request.
+
+!!! note
+    For requests in which clients cannot modify headers it is acceptable
+    to pass the JWT via the query string's `access_token` argument.
+    Alternatively client developers may request a `oneshot_token` and
+    send the result via the `token` query string argument.
+
+!!! warning
+    It is strongly recommended that arguments for the below APIs are
+    passed in the request's body.
+
+#### Login User
+HTTP Request:
+```http
+POST /access/login
+Content-Type: application/json
+
+{
+    "username": "my_user",
+    "password": "my_password"
+}
+```
+JSON-RPC request: Not Available
+
+Returns: An object the logged in username, auth token, refresh token,
+and action summary:
+```json
+{
+    "username": "my_user",
+    "token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY4MDAuNDgxNjU1LCAiZXhwIjogMTYxODg4MDQwMC40ODE2NTUsICJ1c2VybmFtZSI6ICJteV91c2VyIiwgInRva2VuX3R5cGUiOiAiYXV0aCJ9.QdieeEskrU0FrH7rXKuPDSZxscM54kV_vH60uJqdU9g",
+    "refresh_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY4MDAuNDgxNzUxNCwgImV4cCI6IDE2MjY2NTI4MDAuNDgxNzUxNCwgInVzZXJuYW1lIjogIm15X3VzZXIiLCAidG9rZW5fdHlwZSI6ICJyZWZyZXNoIn0.btJF0LJfymInhGJQ2xvPwkp2dFUqwgcw4OA_wE-EcCM",
+    "action": "user_logged_in"
+}
+```
+- The `token` field is a JSON Web Token used to authorize the user.  It should
+  be included in the `Authorization` header as a `Bearer` type for all HTTP
+  requests.  The `token` expires after 1 hour.
+- The `refresh_token` field contains a JWT that can be used to generate new
+  tokens after they are expire. See the
+  [refresh token section](#refresh-json-web-token) for details.
+
+!!! Note
+    This endpoint may be accessed by unauthorized clients.  A 401 would
+    only be returned if the username and/or password is invalid.
+
+#### Logout Current User
+HTTP Request:
+```http
+POST /access/logout
+```
+JSON-RPC request: Not Available
+
+Returns: An object containing the logged out username and action summary.
+```json
+{
+    "username": "my_user",
+    "action": "user_logged_out"
+}
+
+```
+
+#### Get Current User
+HTTP Request:
+```http
+GET /access/user
+```
+JSON-RPC request: Not Available
+
+Returns: An object containing the currently logged in user name and
+the date on which the user was created (in unix time).
+```json
+{
+    "username": "my_user",
+    "created_on": 1618876783.8896716
+}
+```
+
+#### Create User
+HTTP Request:
+```http
+POST /access/user
+Content-Type: application/json
+
+{
+    "username": "my_user",
+    "password": "my_password"
+}
+```
+JSON-RPC request: Not Available
+
+Returns: An object containing the created user name, an auth token,
+a refresh token, and an action summary.  Creating a user also effectively
+logs the user in.
+```json
+{
+    "username": "my_user",
+    "token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY3ODMuODkxNjE5LCAiZXhwIjogMTYxODg4MDM4My44OTE2MTksICJ1c2VybmFtZSI6ICJteV91c2VyIiwgInRva2VuX3R5cGUiOiAiYXV0aCJ9.oH0IShTL7mdlVs4kcx3BIs_-1j0Oe-qXezJKjo-9Xgo",
+    "refresh_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY3ODMuODkxNzAyNCwgImV4cCI6IDE2MjY2NTI3ODMuODkxNzAyNCwgInVzZXJuYW1lIjogIm15X3VzZXIiLCAidG9rZW5fdHlwZSI6ICJyZWZyZXNoIn0.a6ZeRjk8RQQJDDH0JV-qGY_d_HIgfI3XpsqUlUaFT7c",
+    "action": "user_created"
+}
+```
+!!! note
+    Unlike `/access/login`, `/access/user` is a protected endpoint.  To
+    create a new user a client must either be trusted, use the API Key,
+    or be logged in as another user.
+
+#### Delete User
+Deletes a registered user.
+
+!!! note
+    A request to delete a user MUST come from an authorized source
+    other than the account to be deleted.  This can be a "trusted user",
+    the "api key user", or any other user account.
+
+HTTP Request:
+```http
+DELETE /access/user
+Content-Type: application/json
+
+{
+    "username": "my_username"
+}
+```
+JSON-RPC request: Not Available
+
+Returns: The username of the deleted user and an action summary.  This
+effectively logs the user out, as all outstanding tokens will be invalid.
+```json
+{
+    "username": "my_user",
+    "action": "user_deleted"
+}
+```
+
+#### List Available Users
+HTTP Request:
+```http
+GET /access/users/list
+```
+JSON-RPC request: Not Available
+
+Returns: A list of created users on the system
+```json
+{
+    "users": [
+        {
+            "username": "testuser",
+            "created_on": 1618771331.1685035
+        },
+        {
+            "username": "testuser2",
+            "created_on": 1620943153.0191233
+        }
+    ]
+}
+```
+
+#### Reset User Password
+HTTP Request:
+```http
+POST /access/user/password
+Content-Type: application/json
+
+{
+    "password": "my_current_password",
+    "new_password": "my_new_pass"
+}
+```
+JSON-RPC request: Not Available
+
+Returns:  The username and action summary.
+```json
+{
+    "username": "my_user",
+    "action": "user_password_reset"
+}
+```
+
+#### Refresh JSON Web Token
+This endpoint can be used to refresh an expired auth token.  If this
+request returns an error then the refresh token is no longer valid and
+the user must login with their credentials.
+
+HTTP Request:
+```http
+POST /access/refresh_jwt
+Content-Type: application/json
+
+{
+    "refresh_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4Nzc0ODUuNzcyMjg5OCwgImV4cCI6IDE2MjY2NTM0ODUuNzcyMjg5OCwgInVzZXJuYW1lIjogInRlc3R1c2VyIiwgInRva2VuX3R5cGUiOiAicmVmcmVzaCJ9.Y5YxGuYSzwJN2WlunxlR7XNa2Y3GWK-2kt-MzHvLbP8"
+}
+```
+
+JSON-RPC request: Not Available
+
+Returns:  The username, new auth token, and action summary.
+```json
+{
+    "username": "my_user",
+    "token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzgyNDMuNTE2Nzc5MiwgImV4cCI6IDE2MTg4ODE4NDMuNTE2Nzc5MiwgInVzZXJuYW1lIjogInRlc3R1c2VyIiwgInRva2VuX3R5cGUiOiAiYXV0aCJ9.Ia_X_pf20RR4RAEXcxalZIOzOBOs2OwearWHfRnTSGU",
+    "action": "user_jwt_refresh"
+}
+```
+!!! Note
+    This endpoint may be accessed by unauthorized clients.  A 401 would
+    only be returned if the refresh token is invalid.
+
+#### Generate a Oneshot Token
+
+Javascript is not capable of modifying the headers for some HTTP requests
+(for example, the `websocket`), which is a requirement to apply JWT or API Key
+authorization.  To work around this clients may request a Oneshot Token and
+pass it via the query string for these requests.  Tokens expire in 5 seconds
+and may only be used once, making them relatively safe for inclusion in the
+query string.
+
+HTTP request:
+```http
+GET /access/oneshot_token
+```
+JSON-RPC request: Not Available
+
+Returns:
+
+A temporary token that may be added to a request's query string for access
+to any API endpoint.  The query string should be added in the form of:
+```
+?token={base32_ramdom_token}
+```
 
 #### Get the Current API Key
 HTTP request:
@@ -1444,29 +1801,6 @@ Returns:
 The newly generated API key.  This overwrites the previous key.  Note that
 the API key change is applied immediately, all subsequent HTTP requests
 from untrusted clients must use the new key.
-
-#### Generate a Oneshot Token
-
-Javascript is not capable of modifying the headers for some HTTP requests
-(for example, the `websocket`), which is a requirement to apply `X-Api-Key`
-authorization.  To work around this clients may request a Oneshot Token and
-pass it via the query string for these requests.  Tokens expire in 5 seconds
-and may only be used once, making them relatively safe for inclusion in the
-query string.
-
-HTTP request:
-```http
-GET /access/oneshot_token
-```
-JSON-RPC request: Not Available
-
-Returns:
-
-A temporary token that may be added to a request's query string for access
-to any API endpoint.  The query string should be added in the form of:
-```
-?token={base32_ramdom_token}
-```
 
 ### Database APIs
 The following endpoints provide access to Moonraker's ldbm database.  The
@@ -1707,6 +2041,7 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             "owner": "Arksine",
             "version": "v0.4.1-45",
             "remote_version": "v0.4.1-45",
+            "full_version_string": "v0.4.1-45-g7e230c1c",
             "current_hash": "7e230c1c77fa406741ab99fb9156951c4e5c9cb4",
             "remote_hash": "7e230c1c77fa406741ab99fb9156951c4e5c9cb4",
             "is_dirty": false,
@@ -1733,6 +2068,7 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             "owner": "KevinOConnor",
             "version": "v0.9.1-317",
             "remote_version": "v0.9.1-324",
+            "full_version_string": "v0.9.1-324-gd77928b1",
             "current_hash": "d77928b17ba6b32189033b3d6decdb5bcc7c342c",
             "remote_hash": "22753f3b389e3f21a6047bac70abc42b6cf4a7dc",
             "is_dirty": false,
@@ -1783,8 +2119,9 @@ as git repos have the following fields:
     be "master".
 - `remote_alias`: the alias for the remote.  This should typically be
     "origin".
-- `version`:  version of the current repo on disk
-- `remote_version`: version of the latest available update
+- `version`:  abbreviated version of the current repo on disk
+- `remote_version`: abbreviated version of the latest available update
+- `full_version_string`:  The complete version string of the current repo.
 - `current_hash`: hash of the most recent commit on disk
 - `remote_hash`: hash of the most recent commit pushed to the remote
 - `is_valid`: true if installation is a valid git repo on the master branch
@@ -1985,6 +2322,66 @@ An array of objects containing info for each configured device.
 ```
 
 #### Get Device Status
+Returns the status for a single configured device.
+
+HTTP request:
+```http
+GET /machine/device_power/device?device=green_led
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "machine.device_power.get_device",
+    "params": {
+        "device": "green_led"
+    },
+    "id": 4564
+}
+```
+Returns:
+
+An object containing power state for the requested device:
+```json
+{
+    "green_led": "off"
+}
+```
+
+#### Set Device State
+Toggle, turn on, or turn off a specified device.
+
+HTTP request:
+```http
+POST /machine/device_power/device?device=green_led&action=on
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "machine.device_power.post_device",
+    "params": {
+        "device": "green_led",
+        "action": "on"
+    },
+    "id": 4564
+}
+```
+
+!!! note
+    The `action` argument may be `on`, `off`, or `toggle`.  Any
+    other value will result in an error.
+
+Returns:
+
+An object containing new power state for the requested device:
+```json
+{
+    "green_led": "off"
+}
+```
+
+#### Get Batch Device Status
 Get power status for the requested devices.  At least one device must be
 specified.
 
@@ -2014,7 +2411,7 @@ An object containing power state for each requested device:
 }
 ```
 
-#### Power On Devices
+#### Batch Power On Devices
 Power on the requested devices.  At least one device must be
 specified.
 
@@ -2042,7 +2439,7 @@ An object containing power state for each requested device:
 }
 ```
 
-#### Power Off Devices
+#### Batch Power Off Devices
 Power off the requested devices.  At least one device must be
 specified.
 
@@ -2305,7 +2702,7 @@ The APIs below are avilable when the `[history]` component has been configured.
 #### Get job list
 HTTP request:
 ```http
-GET /server/history/list?limit=50&start=50&since=1&before=5
+GET /server/history/list?limit=50&start=50&since=1&before=5&order=asc
 ```
 JSON-RPC request:
 ```json
@@ -2316,7 +2713,8 @@ JSON-RPC request:
         "limit": 50,
         "start": 10,
         "since": 464.54,
-        "before": 1322.54
+        "before": 1322.54,
+        "order": "asc"
     },
     "id": 5656
 }
@@ -2325,9 +2723,10 @@ JSON-RPC request:
 All arguments are optional. Arguments are as follows:
 
 - `start` Record number to start from (i.e. 10 would start at the 10th print)
-- `limit` Maximum Number of prints to return
+- `limit` Maximum Number of prints to return (default: 50)
 - `before` All jobs before this UNIX timestamp
 - `since` All jobs after this UNIX timestamp
+- `order` Define return order `asc` or `desc` (default)
 
 Returns:
 
@@ -2630,29 +3029,22 @@ to alert all connected clients of the change:
 }
 ```
 The `source_item` field is only present for `move_item` and
-`copy_item` actions.  The following `action` field will be set
+`copy_item` actions.  The `action` field will be set
 to one of the following values:
 
-- `upload_file`
-- `delete_file`
+- `create_file`
 - `create_dir`
+- `delete_file`
 - `delete_dir`
-- `move_item`
-- `copy_item`
+- `move_file`
+- `move_dir`
+- `modify_file`
+- `root_update`
 
-#### Metadata Update
-When a new file is uploaded via the API a websocket notification is broadcast
-to all connected clients after parsing is complete:
-```json
-{
-    "jsonrpc": "2.0",
-    "method": "notify_metadata_update",
-    "params": [{metadata}]
-}
-```
-
-Where `metadata` is an object matching that returned from a
-[gcode metadata request](#get-gcode-metadata).
+Most of the above actions are self explanatory.  The `root_update`
+notification is sent when a `root` folder has changed its location,
+for example when a user configures a different gcode file path
+in Klipper.
 
 #### Update Manager Response
 The update manager will send asyncronous messages to the client during an
@@ -2699,7 +3091,8 @@ Where `update_info` is an object that matches the response from an
 
 #### CPU Throttled
 If the system supports throttled CPU monitoring Moonraker will send the
-following notification when it detectes an active throttled condition.
+following notification when it detects a change to the current throttled
+state:
 ```json
 {
     "jsonrpc": "2.0",
@@ -2709,9 +3102,33 @@ following notification when it detectes an active throttled condition.
 ```
 
 Where `throtled_state` is an object that matches the `throttled_state` field
-in the response from a [process info](#get-process-info) request.  It is
-possible for clients to receive this notification multiple times if the system
-repeatedly transitions between an active and inactive throttled condition.
+in the response from a [Moonraker process stats](#get-moonraker-process-stats)
+request. It is possible for clients to receive this notification multiple times
+if the system repeatedly transitions between an active and inactive throttled
+condition.
+
+#### Moonraker Process Statistic Update
+Moonraker will emit the following notification each time it samples its
+process statistics:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "notify_proc_stat_update",
+    "params": [{
+        "moonraker_stats": {
+            "time": 1615837812.0894408,
+            "cpu_usage": 1.99,
+            "memory": 23636,
+            "mem_units": "kB"
+        },
+        "cpu_temp": 44.008
+    }]
+}
+```
+
+As with the [proc_stats request](#get-moonraker-process-stats) the `cpu_temp`
+field will be set to `null` if the host machine does not support retreiving CPU
+temperatures at `/sys/class/thermal/thermal_zone0`.
 
 #### History Changed
 If the `[history]` module is enabled the following notification is sent when
@@ -2731,6 +3148,36 @@ a job is added or finished:
 The `action` field may be `added` or `finished`. The `job` field contains
 an object matches the one returned when requesting
 [job data](#get-a-single-job).
+
+#### Authorized User Created
+If the `[authorization]` module is enabled the following notification is
+sent when a new user is created:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "notify_user_created",
+    "params": [
+        {
+            "username": "<username>"
+        }
+    ]
+}
+```
+
+#### Authorized User Deleted
+If the `[authorization]` module is enabled the following notification is
+sent when an existing user is deleted.
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "notify_user_deleted",
+    "params": [
+        {
+            "username": "<username>"
+        }
+    ]
+}
+```
 
 ### Appendix
 

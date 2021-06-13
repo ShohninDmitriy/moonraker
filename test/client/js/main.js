@@ -7,7 +7,7 @@
 import JsonRPC from "./json-rpc.js?v=0.1.2";
 
 var origin = location.origin;
-var ws_url = (window.location.protocol == "https" ? "wss://" : "ws://")
+var ws_url = (window.location.protocol == "https:" ? "wss://" : "ws://")
     + location.host;
 
 // API Definitions
@@ -120,6 +120,12 @@ var api = {
         url: "/server/files/config_examples/"
     },
 
+    // Server APIs
+    server_info: {
+        url: "/server/info",
+        method: "server.info"
+    },
+
     // Machine APIs
     reboot: {
         url: "/machine/reboot",
@@ -136,11 +142,28 @@ var api = {
     },
     oneshot_token: {
         url: "/access/oneshot_token"
+    },
+    login: {
+        url: "/access/login"
+    },
+    logout: {
+        url: "/access/logout"
+    },
+    refresh_jwt: {
+        url: "/access/refresh_jwt"
+    },
+    user: {
+        url: "/access/user"
+    },
+    reset_password: {
+        url: "/access/user/password"
     }
 }
 
 var websocket = null;
 var apikey = null;
+var auth_token = null;
+var refresh_token = window.localStorage.getItem('refresh_token');
 var paused = false;
 var klippy_ready = false;
 var api_type = 'http';
@@ -276,6 +299,29 @@ function process_mesh(result) {
     }
     console.log("Processed Mesh Coordinates:");
     console.log(coordinates);
+}
+
+async function calculate_checksum(file) {
+    let done_promise = new Promise((resolve, reject) => {
+        let reader = file.stream().getReader();
+        let hash = SHA256.createHash();
+        reader.read().then(function read_file({done, value}) {
+            if (done) {
+                resolve(hash.digest("hex"));
+                return;
+            }
+            hash.update(value);
+            return reader.read().then(read_file)
+        });
+    })
+    let checksum = await done_promise;
+    if (checksum == null) {
+        console.log("Unable to calculate checksum for file")
+        return null;
+    } else {
+        console.log(`Calculated Checksum: ${checksum}`)
+        return checksum;
+    }
 }
 //***********End UI Update Functions****************/
 
@@ -752,7 +798,7 @@ function handle_file_list_changed(file_info) {
     // Update the jstree based on the action and info
     let parent_node = parse_node_path(file_info.item.root, file_info.item.path);
     $("#filelist").jstree('refresh_node', parent_node);
-    if (file_info.action == "move_item") {
+    if (file_info.action.startsWith("move_")) {
         let src_parent_node = parse_node_path(
             file_info.source_item.root, file_info.source_item.path)
         if (src_parent_node != parent_node)
@@ -767,6 +813,18 @@ function handle_metadata_update(metadata) {
     console.log(metadata);
 }
 json_rpc.register_method("notify_metadata_update", handle_metadata_update);
+
+function handle_cpu_throttled(tdata) {
+    console.log("CPU Throttled");
+    console.log(tdata);
+}
+json_rpc.register_method("notify_cpu_throttled", handle_cpu_throttled);
+
+function handle_proc_stat_update(proc_stats) {
+    // TODO: Display Temp
+    return;
+}
+json_rpc.register_method("notify_proc_stat_update", handle_proc_stat_update);
 
 //***********End Klipper Event Handlers (JSON-RPC)*****************/
 
@@ -859,6 +917,17 @@ function run_request(url, method, callback=null)
     let settings = {
         url: url,
         method: method,
+        statusCode: {
+            401: function() {
+                if (refresh_token != null) {
+                    refresh_json_web_token(run_request, url, method, callback);
+                }
+                else {
+                    auth_token = null;
+                    $("#do_login").click();
+                }
+            }
+        },
         success: (resp, status) => {
             console.log(resp);
             if (callback != null)
@@ -872,7 +941,9 @@ function run_request(url, method, callback=null)
         settings.contentType = false,
         settings.processData = false
     }
-    if (apikey != null)
+    if (auth_token != null)
+        settings.headers = {"Authorization": `Bearer ${auth_token}`};
+    else if (apikey != null)
         settings.headers = {"X-Api-Key": apikey};
     $.ajax(settings);
 }
@@ -894,9 +965,9 @@ function form_delete_request(api_url, query_string="", callback=null) {
 
 function form_download_request(uri) {
     let dl_url = origin + uri;
-    if (apikey != null) {
-        form_get_request(api.oneshot_token.url,
-            callback=(resp) => {
+    if (apikey != null || auth_token != null) {
+        form_get_request(api.oneshot_token.url, "",
+            (resp) => {
                 let token = resp.result;
                 dl_url += "?token=" + token;
                 do_download(dl_url);
@@ -961,7 +1032,9 @@ function jstree_populate_children(node, callback) {
     if (api_type == "http") {
         let qs = `?path=${node.id}`;
         let settings = {url: origin + api.directory.url + qs};
-        if (apikey != null)
+        if (auth_token != null)
+            settings.headers = {"Authorization": `Bearer ${auth_token}`};
+        else if (apikey != null)
             settings.headers = {"X-Api-Key": apikey};
         $.get(settings, (resp, status) => {
             callback(generate_children(resp.result, node));
@@ -1130,6 +1203,7 @@ class KlippyWebsocket {
         this.onmessage = null;
         this.onopen = null;
         this.id = null;
+        this.reconnect = true
         this.connect();
     }
 
@@ -1138,14 +1212,15 @@ class KlippyWebsocket {
         // to reconnect if its closed. This is nice as it allows the
         // client to easily recover from Klippy restarts without user
         // intervention
-        if (apikey != null) {
+        if (apikey != null || auth_token != null) {
             // Fetch a oneshot token to pass websocket authorization
             let token_settings = {
                 url: origin + api.oneshot_token.url,
-                headers: {
-                    "X-Api-Key": apikey
-                }
             }
+            if (auth_token != null)
+                token_settings.headers = {"Authorization": `Bearer ${auth_token}`};
+            else
+                token_settings.headers = {"X-Api-Key": apikey};
             $.get(token_settings, (data, status) => {
                 let token = data.result;
                 let url = this.base_address + "/websocket?token=" + token;
@@ -1172,10 +1247,14 @@ class KlippyWebsocket {
             klippy_ready = false;
             this.connected = false;
             this.id = null;
-            console.log("Websocket Closed, reconnecting in 1s: ", e.reason);
-            setTimeout(() => {
-                this.connect();
-            }, 1000);
+            // TODO:  Need to cancel any pending JSON-RPC requests
+            if (this.reconnect) {
+                console.log("Websocket Closed, reconnecting in 1s: ", e.reason);
+                setTimeout(() => {
+                    if (this.reconnect)
+                        this.connect();
+                }, 1000);
+            }
         };
 
         this.ws.onerror = (err) => {
@@ -1202,7 +1281,7 @@ class KlippyWebsocket {
     }
 
     close() {
-        // TODO: Cancel the timeout
+        this.reconnect = false
         this.ws.close();
     }
 
@@ -1227,25 +1306,168 @@ function create_websocket(url) {
     json_rpc.register_transport(websocket);
 }
 
+function login_jwt_user(user, pass, do_create) {
+    if (!user || !pass) {
+        alert("Invalid username/password")
+        return;
+    }
+    let close_btn_name = "#login_close"
+    if (do_create)
+        close_btn_name = "#signup_close"
+    let settings = {
+        url: origin + api.login.url,
+        data: JSON.stringify({username: user, password: pass}),
+        contentType: "application/json",
+        dataType: 'json'
+    }
+    if (do_create) {
+        settings.url = origin + api.user.url;
+        if (auth_token != null)
+                settings.headers = {"Authorization": `Bearer ${auth_token}`};
+        else if (apikey != null)
+            settings.headers = {"X-Api-Key": apikey};
+    }
+    $.post(settings, (resp, status) => {
+        let res = resp.result;
+        console.log("Login Response:");
+        console.log(res);
+        auth_token = res.token;
+        refresh_token = res.refresh_token;
+        window.localStorage.setItem('refresh_token', refresh_token);
+        $('.req-login').prop('disabled', false);
+        $(close_btn_name).click();
+        check_authorization();
+    }).fail(() => {
+        console.log("Login Failed");
+        alert("Login Failed")
+    });
+}
+
+function logout_jwt_user() {
+    if (auth_token == null) {
+        console.log("No User Logged In")
+        return;
+    }
+    let settings = {
+        url: origin + api.logout.url,
+        contentType: "application/json",
+        dataType: 'json',
+        headers: {
+            "Authorization": `Bearer ${auth_token}`
+        }
+    }
+
+    $.post(settings, (resp, status) => {
+        let res = resp.result;
+        console.log("Logout Response:");
+        console.log(res);
+        auth_token = null;
+        refresh_token = null;
+        window.localStorage.removeItem('refresh_token');
+        $('.req-login').prop('disabled', true);
+    }).fail(() => {
+        console.log("Logout User Failed");
+    });
+}
+
+function delete_jwt_user(user) {
+    if (!user) {
+        alert("Invalid username or password, Cannot Delete User");
+        return;
+    }
+
+    let settings = {
+        method: 'DELETE',
+        url: origin + api.user.url,
+        contentType: "application/json",
+        data: JSON.stringify({username: user}),
+        dataType: 'json',
+        headers: {
+            "Authorization": `Bearer ${auth_token}`
+        },
+        success: (resp, status) => {
+            let res = resp.result;
+            console.log("Delete User Response:");
+            console.log(res);
+            $("#deleteuser_close").click()
+        }
+    }
+
+    $.ajax(settings)
+    .fail(() => {
+        console.log("Delete User Failed");
+        $("#deleteuser_close").click()
+        window.alert("Unable to delete user!")
+    });
+}
+
+function change_jwt_password(old_pass, new_pass) {
+    if (!old_pass || !new_pass) {
+        alert("Invalid input for change password")
+        return;
+    }
+    let settings = {
+        url: origin + api.reset_password.url,
+        data: JSON.stringify({password: old_pass, new_password: new_pass}),
+        contentType: "application/json",
+        dataType: 'json',
+        headers: {
+            "Authorization": `Bearer ${auth_token}`
+        }
+    }
+    $.post(settings, (resp, status) => {
+        let res = resp.result;
+        console.log("Change Password Response:");
+        console.log(res);
+        $("#changepass_close").click();
+    }).fail(() => {
+        console.log("Failed to change password");
+        alert("Password Reset Failed")
+    });
+}
+
+function refresh_json_web_token(callback, ...args) {
+    let settings = {
+        url: origin + api.refresh_jwt.url,
+        data: JSON.stringify({refresh_token: refresh_token}),
+        contentType: "application/json",
+        dataType: 'json',
+    }
+    $.post(settings, (resp, status) => {
+        let res = resp.result;
+        console.log("Refresh JWT Response:");
+        console.log(res);
+        auth_token = res.token;
+        $('.req-login').prop('disabled', false);
+        if (callback != null)
+            callback(...args);
+    }).fail(() => {
+        console.log("Refresh JWT Failed");
+        auth_token = null;
+        refresh_token = null;
+        window.localStorage.removeItem('refresh_token');
+        $('.req-login').prop('disabled', true);
+        $("#do_login").click();
+    });
+}
+
 function check_authorization() {
     // send a HTTP "run gcode" command
     let settings = {
-        url: origin + api.printer_info.url,
+        url: origin + api.server_info.url,
         statusCode: {
             401: function() {
-                    // Show APIKey Popup
-                    let result = window.prompt("Enter a valid API Key:", "");
-                    if (result == null || result.length != 32) {
-                        console.log("Invalid API Key: " + result);
-                        apikey = null;
-                    } else {
-                        apikey = result;
-                    }
-                    check_authorization();
+                if (refresh_token != null) {
+                    refresh_json_web_token(check_authorization);
+                } else {
+                    $("#do_login").click();
                 }
             }
+        }
     }
-    if (apikey != null)
+    if (auth_token != null)
+        settings.headers = {"Authorization": `Bearer ${auth_token}`};
+    else if (apikey != null)
         settings.headers = {"X-Api-Key": apikey};
     $.get(settings, (data, status) => {
         // Create a websocket if /printer/info successfully returns
@@ -1261,11 +1483,9 @@ function do_download(url) {
 window.onload = () => {
     // Handle changes between the HTTP and Websocket API
     $('.reqws').prop('disabled', true);
+    $('.req-login').prop('disabled', true);
     $('input[type=radio][name=test_type]').on('change', function() {
         api_type = $(this).val();
-        let disable_transfer = (!$('#cbxFileTransfer').is(":checked") && is_printing);
-        $('.toggleable').prop(
-            'disabled', (api_type == 'websocket' || disable_transfer));
         $('.reqws').prop('disabled', (api_type == 'http'));
         $('#apimethod').prop('hidden', (api_type == "websocket"));
         $('#apiargs').prop('hidden', (api_type == "http"));
@@ -1467,7 +1687,9 @@ window.onload = () => {
             let sendtype = $("input[type=radio][name=api_cmd_type]:checked").val();
             let url = $('#apirequest').val();
             let settings = {url: url}
-            if (apikey != null)
+            if (auth_token != null)
+                settings.headers = {"Authorization": `Bearer ${auth_token}`};
+            else if (apikey != null)
                 settings.headers = {"X-Api-Key": apikey};
             if (sendtype == "get") {
                 console.log("Sending GET " + url);
@@ -1510,7 +1732,7 @@ window.onload = () => {
     });
 
     // Uploads a selected file to the server
-    $('#upload-file').change(() => {
+    $('#upload-file').change(async () => {
         update_progress(0, 100);
         let file = $('#upload-file').prop('files')[0];
         let dir = get_selected_item("dir");
@@ -1521,6 +1743,8 @@ window.onload = () => {
             let root = dir[0];
             let directory = dir.slice(1).join("/");
             console.log("Sending Upload Request...");
+            // First, calculate the file checksum
+            let chksum = await calculate_checksum(file);
             // It might not be a bad idea to validate that this is
             // a gcode file here, and reject and other files.
 
@@ -1532,6 +1756,8 @@ window.onload = () => {
             fdata.append("file", file);
             fdata.append("root", root);
             fdata.append("path", directory);
+            if (chksum != null)
+                fdata.append("checksum", chksum);
             let settings = {
                 url: origin + api.upload.url,
                 data: fdata,
@@ -1553,7 +1779,9 @@ window.onload = () => {
                     return false;
                 }
             };
-            if (apikey != null)
+            if (auth_token != null)
+                settings.headers = {"Authorization": `Bearer ${auth_token}`};
+            else if (apikey != null)
                 settings.headers = {"X-Api-Key": apikey};
             $.ajax(settings);
             $('#upload-file').val('');
@@ -1645,11 +1873,13 @@ window.onload = () => {
     $('#btntestmesh').click(() => {
         if (api_type == 'http') {
             let settings = {url: origin + api.object_status.url + "?bed_mesh"};
-            if (apikey != null)
+            if (auth_token != null)
+                settings.headers = {"Authorization": `Bearer ${auth_token}`};
+            else if (apikey != null)
                 settings.headers = {"X-Api-Key": apikey};
             $.get(settings, (resp, status) => {
-                    process_mesh(resp.result)
-                    return false;
+                process_mesh(resp.result)
+                return false;
             });
         } else {
             get_mesh();
@@ -1724,6 +1954,129 @@ window.onload = () => {
 
     $('#btnmoonlog').click(() => {
         form_download_request(api.moonraker_log.url);
+    });
+
+    $('#btnloginuser').click(() => {
+        $("#do_login").click();
+    });
+
+    $('#btncreateuser').click(() => {
+        $("#do_signup").click();
+    });
+
+    $('#btnlogout').click(() => {
+        logout_jwt_user();
+    });
+
+    $('#btndeluser').click(() => {
+        $("#do_deleteuser").click()
+    });
+
+    $('#btnchangepass').click(() => {
+        $("#do_changepass").click();
+    });
+
+    $('#btnsetapikey').click(() => {
+        let defkey = apikey;
+        if (!defkey)
+            defkey = ""
+        let new_key = window.prompt("Enter your API Key", defkey);
+        if (!new_key)
+            apikey = null;
+        else
+            apikey = new_key;
+        check_authorization();
+    });
+
+    $("#do_login").leanModal({
+        top : 200,
+        overlay : 0.4,
+        closeButton: "#login_close"
+    });
+
+    $("#do_signup").leanModal({
+        top : 200,
+        overlay : 0.4,
+        closeButton: "#signup_close"
+    });
+
+    $("#do_changepass").leanModal({
+        top : 200,
+        overlay : 0.4,
+        closeButton: "#changepass_close"
+    });
+
+    $("#do_deleteuser").leanModal({
+        top : 200,
+        overlay : 0.4,
+        closeButton: "#deleteuser_close"
+    });
+
+
+    $("#login_close").click(() => {
+        //$("#login_username").val("");
+        $("#login_password").val("");
+        $("#nav_home").click();
+    });
+
+    $("#signup_close").click(() => {
+        $("#signup_username").val("");
+        $("#signup_password").val("");
+        $("#signup_verify_pass").val("");
+        $("#nav_home").click();
+    });
+
+    $("#changepass_close").click(() => {
+        $("#changepass_oldpass").val("");
+        $("#changepass_newpass").val("");
+        $("#changepass_verify_pass").val("");
+        $("#nav_home").click();
+    });
+
+    $("#deleteuser_close").click(() => {
+        $("#deleteuser_username").val("");
+        $("#nav_home").click();
+    });
+
+    $("#login_form").submit((evt)=> {
+        let user = $("#login_username").val()
+        let pass = $("#login_password").val()
+        if (user != "" && pass != "")
+            login_jwt_user(user, pass, false);
+        else
+            alert("Invalid username/password");
+        return false;
+    });
+
+    $("#signup_form").submit((evt)=> {
+        let user = $("#signup_username").val()
+        let pass = $("#signup_password").val()
+        let verify_pass = $("#signup_verify_pass").val()
+        if (user != "" && pass != "" && pass == verify_pass)
+            login_jwt_user(user, pass, true);
+        else
+            alert("Invalid username/password");
+        return false;
+    });
+
+    $("#changepass_form").submit((evt)=> {
+        let old_pass = $("#changepass_oldpass").val()
+        let new_pass = $("#changepass_newpass").val()
+        let verify_pass = $("#changepass_verify_pass").val()
+        if (old_pass != "" && new_pass != "" && new_pass == verify_pass)
+            change_jwt_password(old_pass, new_pass)
+        else
+            alert("All fields are required to change password");
+        return false;
+    });
+
+    $("#deleteuser_form").submit((evt)=> {
+        let user = $("#deleteuser_username").val()
+        if (user != "")
+            delete_jwt_user(user);
+        else
+            alert("Invalid username/password");
+        return false;
     });
 
     check_authorization();

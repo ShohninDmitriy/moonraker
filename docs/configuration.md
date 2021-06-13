@@ -20,6 +20,16 @@ host: 0.0.0.0
 #  to all interfaces
 port: 7125
 #   The port the HTTP server will listen on.  Default is 7125
+ssl_port: 7130
+#   The port to listen on for SSS (HTTPS) connections.  Note that the HTTPS
+#   server will only be started of the certificate and key options outlined
+#   below are provied.  The default is 7130.
+ssl_certificate_path:
+#   The path to a self signed ssl certificate.  The default is no path, which
+#   disables HTTPS.
+ssl_key_path:
+#   The path to the private key used to signed the certificate.  The default
+#   is no path, which disables HTTPS.
 klippy_uds_address: /tmp/klippy_uds
 #   The address of Unix Domain Socket used to communicate with Klippy. Default
 #   is /tmp/klippy_uds
@@ -41,6 +51,12 @@ database_path: ~/.moonraker_database
 #   Moonraker (such as the "config_path" or the location where gcode
 #   files are stored).  If the folder does not exist an attempt will be made
 #   to create it.  The default is ~/.moonraker_database.
+log_path:
+#   An optional path to a directory where log files are located.  Users may
+#   configure various applications to store logs here and Moonraker will serve
+#   them at "/server/files/logs/*".  The default is no log paths.
+enable_database_debug: False
+#   For developer use only.  End users should leave this option set to False.
 temperature_store_size: 1200
 #   The maximum number of temperature values to store for each sensor. Note
 #   that this value also applies to the "target", "power", and "fan_speed"
@@ -52,28 +68,28 @@ gcode_store_size:  1000
 ## `[authorization]`
 
 The `[authorization]` section provides configuration for Moonraker's
-authorization module. This section is required.
+authorization module.
 
 ```ini
 # moonraker.conf
 
 [authorization]
-enabled: True
-#   Enables authorization.  When set to true, requests must either contain
-#   a valid API key or originate from a trusted client. Default is True.
-api_key_file: ~/.moonraker_api_key
-#   Path of the file that stores Moonraker's API key.  The default is
-#   ~/.moonraker_api_key
+login_timeout:
+#   The time, in days, after which a user is forced to re-enter their
+#   credentials to log in.  This period begins when a logged out user
+#   first logs in.  Successive logins without logging out will not
+#   renew the timeout.  The default is 90 days.
 trusted_clients:
  192.168.1.30
  192.168.1.0/24
-#   A list of newline separated ip addresses and/or ip ranges that are
-#   trusted. Trusted clients are given full access to the API.  Both IPv4
-#   and IPv6 addresses and ranges are supported. Ranges must be expressed
-#   in CIDR notation (see http://ip.sb/cidr for more info).  For example, an
-#   entry of 192.168.1.0/24 will authorize IPs in the range of 192.168.1.1 -
-#   192.168.1.254.  Note that when specifying IPv4 ranges the last segment
-#   of the ip address must be 0. The default is no clients or ranges are
+ my-printer.lan
+#   A list of newline separated ip addresses, ip ranges, or fully qualified
+#   domain names that are trusted. Trusted clients are given full access to
+#   the API.  Both IPv4 and IPv6 addresses and ranges are supported. Ranges
+#   must be expressed in CIDR notation (see http://ip.sb/cidr for more info).
+#   For example, an entry of 192.168.1.0/24 will authorize IPs in the range of
+#   192.168.1.1 - 192.168.1.254.  Note that when specifying IPv4 ranges the
+#   last segment of the ip address must be 0. The default is no clients are
 #   trusted.
 cors_domains:
   http://klipper-printer.local
@@ -92,6 +108,11 @@ cors_domains:
 #   When CORS is enabled by adding an entry to this option, all origins
 #   matching the "trusted_clients" option will have CORS headers set as
 #   well.  If this option is not specified then CORS is disabled.
+force_logins: False
+#   When set to True a user login is required for authorization if at least
+#   one user has been created, overriding the "trusted_clients" configuration.
+#   If no users have been created then trusted client checks will apply.
+#   The default is False.
 ```
 
 ## `[octoprint_compat]`
@@ -170,7 +191,7 @@ gcode:
 
 ## `[power]`
 Enables device power control.  Currently GPIO (relays), TPLink Smartplug,
-and Tasmota (via http) devices are supported.
+and Tasmota (via http) devices, HomeAssistant switch are supported.
 
 ```ini
 # moonraker.conf
@@ -178,7 +199,7 @@ and Tasmota (via http) devices are supported.
 [power device_name]
 type: gpio
 #   The type of device.  Can be either gpio, tplink_smartplug, tasmota
-#   or homeseer.
+#   shelly, homeseer, homeassistant, or loxonev1.
 #   This parameter must be provided.
 off_when_shutdown: False
 #   If set to True the device will be powered off when Klipper enters
@@ -212,11 +233,15 @@ address:
 port:
 #   The above options are used for "tplink_smartplug" devices.  The
 #   address should be a valid ip or hostname for the tplink device.
-#   The port should be the port the device is configured to use.  The
-#   address must be provided. The port defaults to 9999.
+#   The port should be the port the device is configured to use.
+#   "Power Strips" can be controlled by including the socket index
+#   in the ip address.  For example, to control socket index 1:
+#     192.168.1.127/1
+#    The address must be provided. The port defaults to 9999.
 address:
 password:
 output_id:
+timer:
 #   The above options are used for "tasmota" devices.  The
 #   address should be a valid ip or hostname for the tasmota device.
 #   Provide a password if configured in Tasmota (default is empty).
@@ -229,12 +254,16 @@ address:
 user:
 password:
 output_id:
+timer:
 #   The above options are used for "shelly" devices.  The
 #   address should be a valid ip or hostname for the Shelly device.
 #   Provide a user and password if configured in Shelly (default is empty).
 #   If password is set but user is empty the default user "admin" will be used
 #   Provided an output_id (relay id) if the Shelly device supports
-#   more than one (default is 0).
+#   more than one (default is 0). When timer option is used to delay the turn
+#   off make sure to set the state to "on" in action call_remote_method.
+#   So we send a command to turn it on for x sec when its already on then
+#   it turns off.
 address:
 device:
 user:
@@ -248,7 +277,24 @@ password:
 #   "ID" in the "advanced information" section.
 #   Provide a user and password with access to "device control"
 #   and at least the specific device you want to control
-
+address:
+port:
+device:
+token:
+#   The above options are used for "homeassistant" devices.  The
+#   address should be a valid ip or hostname for the homeassistant controller.
+#   "device" should be the ID of the switch to control.
+address:
+user:
+password:
+output_id:
+#   The above options are used for "loxone smart home miniserver v1 " devices.
+#   The address should be a valid ip or hostname for the loxone miniserver v1
+#   device. All entries must be configured in advance in the loxone config.
+#   Provide a user and password configured in loxone config.
+#   The output_id is the name of a programmed output, virtual input or virtual
+#   output in the loxone config his output_id (name) may only be used once in
+#   the loxone config
 ```
 Below are some potential examples:
 ```ini
@@ -284,6 +330,13 @@ type: shelly
 address: 192.168.1.125
 user: user2
 password: password2
+
+[power homeassistant_switch]
+type: homeassistant
+address: 192.168.1.126
+port: 8123
+device: switch.1234567890abcdefghij
+token: home-assistant-very-long-token
 ```
 
 It is possible to toggle device power from the Klippy host, this can be done
