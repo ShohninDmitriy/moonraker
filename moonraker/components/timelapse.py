@@ -261,7 +261,8 @@ class Timelapse:
                 status = "success"
                 msg = f"Rendering Video successful: {outfile}"
                 result.update({
-                    'filename': outfile
+                    'filename': outfile,
+                    'printfile': gcodefile
                 })
                 result.pop("framecount")
                 result.pop("settings")
