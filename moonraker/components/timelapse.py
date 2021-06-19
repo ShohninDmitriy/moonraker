@@ -298,7 +298,7 @@ class Timelapse:
         try:
             frame = re.search(
                 '(?<=frame=)*(\d+)(?=.+fps)', lastcmdreponse
-           	).group()
+            ).group()
         except AttributeError:
             return
         percent = int(frame) / self.framecount * 100
