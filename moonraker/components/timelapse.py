@@ -302,6 +302,8 @@ class Timelapse:
         except AttributeError:
             return
         percent = int(frame) / self.framecount * 100
+        if percent > 100:
+            percent = 100
 
         if self.lastrenderprogress != int(percent):
             self.lastrenderprogress = int(percent)
