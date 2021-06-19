@@ -36,7 +36,8 @@ class Timelapse:
         self.extraoutputparams = config.get("extraoutputparams", "")
         out_dir_cfg = config.get("output_path", "~/timelapse/")
         temp_dir_cfg = config.get("frame_path", "/tmp/timelapse/")
-        self.ffmpeg_binary_path = config.get("ffmpeg_binary_path", "/usr/bin/ffmpeg")
+        self.ffmpeg_binary_path = config.get(
+            "ffmpeg_binary_path", "/usr/bin/ffmpeg")
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -46,10 +47,13 @@ class Timelapse:
                         not found please install to use render functionality")
 
         # setup directories
-        out_dir_cfg = os.path.join(out_dir_cfg, '') # make sure there is a trailing "/"
+        # remove trailing "/"
+        out_dir_cfg = os.path.join(out_dir_cfg, '')
         temp_dir_cfg = os.path.join(temp_dir_cfg, '')
-        self.out_dir = os.path.expanduser(out_dir_cfg) # evaluate and expand "~"
+        # evaluate and expand "~"
+        self.out_dir = os.path.expanduser(out_dir_cfg)
         self.temp_dir = os.path.expanduser(temp_dir_cfg)
+        # create directories if they doesn't exist
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.out_dir, exist_ok=True)
 
@@ -210,7 +214,7 @@ class Timelapse:
             klippy_apis = self.server.lookup_component("klippy_apis")
             kresult = await klippy_apis.query_objects({'print_stats': None})
             pstats = kresult.get("print_stats", {})
-            gcodefile = pstats.get("filename", "").split("/", 1)[1]  # .split(".", 1)[0]
+            gcodefile = pstats.get("filename", "").split("/", 1)[1]
 
             # variable framerate
             if self.variablefps:
@@ -252,7 +256,10 @@ class Timelapse:
             shell_command = self.server.lookup_component("shell_command")
             scmd = shell_command.build_shell_command(cmd, self.ffmpeg_cb)
             try:
-                cmdstatus = await scmd.run(timeout=None, verbose=True, log_complete=False)
+                cmdstatus = await scmd.run(timeout=None,
+                                           verbose=True,
+                                           log_complete=False
+                                           )
             except Exception:
                 logging.exception(f"Error running cmd '{cmd}'")
 
