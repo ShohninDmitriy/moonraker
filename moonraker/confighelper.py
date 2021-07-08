@@ -7,7 +7,6 @@
 from __future__ import annotations
 import configparser
 import os
-import logging
 from utils import SentinelClass
 
 # Annotation imports
@@ -15,7 +14,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Type,
     IO,
     TypeVar,
     Union,
@@ -23,7 +21,6 @@ from typing import (
     List,
 )
 if TYPE_CHECKING:
-    from argparse import Namespace
     from moonraker import Server
     _T = TypeVar("_T")
     ConfigVal = Union[None, int, float, bool, str]
@@ -124,15 +121,18 @@ class ConfigHelper:
         return self._get_option(
             self.config[self.section].getfloat, option, default)
 
-    def read_supplemental_config(self, file_name: str) -> None:
+    def read_supplemental_config(self, file_name: str) -> ConfigHelper:
         cfg_file_path = os.path.normpath(os.path.expanduser(file_name))
         if not os.path.isfile(cfg_file_path):
             raise ConfigError(
                 f"Configuration File Not Found: '{cfg_file_path}''")
         try:
-            self.config.read(cfg_file_path)
+            sup_cfg = configparser.ConfigParser(interpolation=None)
+            sup_cfg.read(cfg_file_path)
         except Exception:
             raise ConfigError(f"Error Reading Config: '{cfg_file_path}'")
+        sections = sup_cfg.sections()
+        return ConfigHelper(self.server, sup_cfg, sections[0], sections)
 
     def write_config(self, file_obj: IO[str]) -> None:
         self.config.write(file_obj)
@@ -158,10 +158,10 @@ class ConfigHelper:
                         "In the future this will result in a startup error.")
 
 def get_configuration(server: Server,
-                      system_args: Namespace
+                      app_args: Dict[str, Any]
                       ) -> ConfigHelper:
     cfg_file_path: str = os.path.normpath(os.path.expanduser(
-        system_args.configfile))
+        app_args['config_file']))
     if not os.path.isfile(cfg_file_path):
         raise ConfigError(
             f"Configuration File Not Found: '{cfg_file_path}''")
@@ -185,8 +185,4 @@ def get_configuration(server: Server,
     except Exception:
         pass
 
-    config['system_args'] = {
-        'configfile': system_args.configfile,
-        'logfile': system_args.logfile,
-        'software_version': system_args.software_version}
     return ConfigHelper(server, config, 'server', orig_sections)

@@ -38,9 +38,9 @@ if TYPE_CHECKING:
     from moonraker import Server
     from confighelper import ConfigHelper
     from websockets import WebRequest
-    from . import database
-    from . import klippy_apis
-    from . import shell_command
+    from components import database
+    from components import klippy_apis
+    from components import shell_command
     DBComp = database.MoonrakerDatabase
     APIComp = klippy_apis.KlippyAPI
     SCMDComp = shell_command.ShellCommandFactory
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 VALID_GCODE_EXTS = ['.gcode', '.g', '.gco', '.ufp', '.nc']
 FULL_ACCESS_ROOTS = ["gcodes", "config"]
 METADATA_SCRIPT = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "../../scripts/extract_metadata.py"))
+    os.path.dirname(__file__), "metadata.py"))
 WATCH_FLAGS = iFlags.CREATE | iFlags.DELETE | iFlags.MODIFY \
     | iFlags.MOVED_TO | iFlags.MOVED_FROM | iFlags.ONLYDIR \
     | iFlags.CLOSE_WRITE
