@@ -14,8 +14,6 @@ import re
 import time
 import tempfile
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
-from tornado.ioloop import IOLoop
 from .app_deploy import AppDeploy
 from utils import verify_source
 
@@ -42,7 +40,7 @@ class ZipDeploy(AppDeploy):
     def __init__(self,
                  config: ConfigHelper,
                  cmd_helper: CommandHelper,
-                 app_params: Optional[Dict[str, Any]]
+                 app_params: Optional[Dict[str, Any]] = None
                  ) -> None:
         super().__init__(config, cmd_helper, app_params)
         self.official_repo: str = "?"
@@ -85,11 +83,13 @@ class ZipDeploy(AppDeploy):
         return new_app
 
     async def _parse_info_file(self, file_name: str) -> Dict[str, Any]:
+        info_file = self.path.joinpath(file_name)
+        if not info_file.exists():
+            self.log_info(f"Unable to locate file '{info_file}'")
+            return {}
         try:
-            info_file = self.path.joinpath(file_name)
-            with ThreadPoolExecutor(max_workers=1) as tpe:
-                info_bytes = await IOLoop.current().run_in_executor(
-                    tpe, info_file.read_text)
+            event_loop = self.server.get_event_loop()
+            info_bytes = await event_loop.run_in_thread(info_file.read_text)
             info: Dict[str, Any] = json.loads(info_bytes)
         except Exception:
             self.log_exc(f"Unable to parse info file {file_name}")
@@ -127,10 +127,11 @@ class ZipDeploy(AppDeploy):
             if key not in release_info:
                 self._add_error(f"Missing release info item: {key}")
         self.detected_type = "?"
-        self.need_channel_update = False
+        self.need_channel_update = self.channel == "dev"
         if 'channel' in release_info:
             local_channel = release_info['channel']
-            self.need_channel_update = self.channel != local_channel
+            if self.channel == "stable" and local_channel == "beta":
+                self.need_channel_update = True
             self.detected_type = "zip"
             if local_channel == "beta":
                 self.detected_type = "zip_beta"
@@ -145,9 +146,8 @@ class ZipDeploy(AppDeploy):
                 f"Owner repo mismatch. Received {owner_repo}, "
                 f"official: {self.official_repo}")
         # validate the local source code
-        with ThreadPoolExecutor(max_workers=1) as tpe:
-            res = await IOLoop.current().run_in_executor(
-                tpe, verify_source, self.path)
+        event_loop = self.server.get_event_loop()
+        res = await event_loop.run_in_thread(verify_source, self.path)
         if res is not None:
             self.source_checksum, self.pristine = res
             if self.name in ["moonraker", "klipper"]:
@@ -195,10 +195,11 @@ class ZipDeploy(AppDeploy):
         current_release: Dict[str, Any] = {}
         for release in releases:
             if not latest_release:
-                if release['prerelease']:
-                    if self.channel != "stable":
-                        latest_release = release
-                elif self.channel == "stable":
+                if self.channel != "stable":
+                    # Allow the beta channel to update regardless
+                    latest_release = release
+                elif not release['prerelease']:
+                    # This is a stable release on the stable channle
                     latest_release = release
             if current_tag is not None:
                 if not current_release and release['tag_name'] == current_tag:
@@ -252,15 +253,14 @@ class ZipDeploy(AppDeploy):
             self._add_error(
                 "RELEASE_INFO not found in latest release assets")
         self.commit_log = []
-        if self.short_version == self.latest_version:
-            # No need to report the commit log when versions match
-            return
-        if "COMMIT_LOG" in asset_info:
-            asset_url, content_type, size = asset_info['COMMIT_LOG']
-            commit_bytes = await self.cmd_helper.http_download_request(
-                asset_url, content_type)
-            commit_info: Dict[str, Any] = json.loads(commit_bytes)
-            self.commit_log = commit_info.get(self.name, [])
+        if self.short_version != self.latest_version:
+            # Only report commit log if versions change
+            if "COMMIT_LOG" in asset_info:
+                asset_url, content_type, size = asset_info['COMMIT_LOG']
+                commit_bytes = await self.cmd_helper.http_download_request(
+                    asset_url, content_type)
+                commit_info: Dict[str, Any] = json.loads(commit_bytes)
+                self.commit_log = commit_info.get(self.name, [])
         if zip_file_name in asset_info:
             self.release_download_info = asset_info[zip_file_name]
             self._is_valid = True
@@ -369,9 +369,9 @@ class ZipDeploy(AppDeploy):
                     dl_url, temp_download_file, content_type, size)
                 self.notify_status(
                     f"Download Complete, extracting release to '{self.path}'")
-                with ThreadPoolExecutor(max_workers=1) as tpe:
-                    await IOLoop.current().run_in_executor(
-                        tpe, self._extract_release, temp_download_file)
+                event_loop = self.server.get_event_loop()
+                await event_loop.run_in_thread(
+                    self._extract_release, temp_download_file)
             await self._update_dependencies(npm_hash, force=force_dep_update)
             await self._update_repo_state()
             await self.restart_service()
