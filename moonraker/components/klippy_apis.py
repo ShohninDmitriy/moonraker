@@ -39,8 +39,8 @@ SENTINEL = SentinelClass.get_instance()
 class KlippyAPI(Subscribable):
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
-        system_args = config['system_args']
-        self.version = system_args.get('software_version')
+        app_args = self.server.get_app_args()
+        self.version = app_args.get('software_version')
         # Maintain a subscription for all moonraker requests, as
         # we do not want to overwrite them
         self.host_subscription: Subscription = {}
@@ -60,13 +60,13 @@ class KlippyAPI(Subscribable):
             "/printer/firmware_restart", ['POST'], self._gcode_firmware_restart)
 
     async def _gcode_pause(self, web_request: WebRequest) -> str:
-        return await self.run_gcode("PAUSE")
+        return await self._send_klippy_request("pause_resume/pause", {})
 
     async def _gcode_resume(self, web_request: WebRequest) -> str:
-        return await self.run_gcode("RESUME")
+        return await self._send_klippy_request("pause_resume/resume", {})
 
     async def _gcode_cancel(self, web_request: WebRequest) -> str:
-        return await self.run_gcode("CANCEL_PRINT")
+        return await self._send_klippy_request("pause_resume/cancel", {})
 
     async def _gcode_start_print(self, web_request: WebRequest) -> str:
         filename: str = web_request.get_str('filename')
@@ -191,7 +191,10 @@ class KlippyAPI(Subscribable):
             {'response_template': {"method": method_name},
              'remote_method': method_name})
 
-    def send_status(self, status: Dict[str, Any]) -> None:
+    def send_status(self,
+                    status: Dict[str, Any],
+                    eventtime: float
+                    ) -> None:
         self.server.send_event("server:status_update", status)
 
 def load_component(config: ConfigHelper) -> KlippyAPI:

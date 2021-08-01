@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 import argparse
+from asyncio.events import new_event_loop
 import sys
 import importlib
 import os
@@ -19,10 +20,8 @@ import signal
 import confighelper
 import utils
 import asyncio
-from tornado import iostream, gen
-from tornado.ioloop import IOLoop
-from tornado.util import TimeoutError
-from tornado.locks import Event
+from tornado import iostream
+from eventloop import EventLoop
 from app import MoonrakerApp
 from utils import ServerError, SentinelClass
 
@@ -40,10 +39,10 @@ from typing import (
     TypeVar,
 )
 if TYPE_CHECKING:
-    from websockets import WebRequest, WebSocket, Subscribable
+    from websockets import WebRequest, Subscribable
     from components.data_store import DataStore
     from components.klippy_apis import KlippyAPI
-    from components.file_manager import FileManager
+    from components.file_manager.file_manager import FileManager
     FlexCallback = Callable[..., Optional[Coroutine]]
     _T = TypeVar("_T")
 
@@ -60,10 +59,13 @@ SENTINEL = SentinelClass.get_instance()
 class Server:
     error = ServerError
     def __init__(self,
-                 args: argparse.Namespace,
-                 file_logger: Optional[utils.MoonrakerLoggingHandler]
+                 args: Dict[str, Any],
+                 file_logger: Optional[utils.MoonrakerLoggingHandler],
+                 event_loop: EventLoop
                  ) -> None:
+        self.event_loop = event_loop
         self.file_logger = file_logger
+        self.app_args = args
         self.config = config = confighelper.get_configuration(self, args)
         # log config file
         strio = io.StringIO()
@@ -85,24 +87,25 @@ class Server:
         self.klippy_address: str = config.get(
             'klippy_uds_address', "/tmp/klippy_uds")
         self.klippy_connection = KlippyConnection(
-            self.process_command, self.on_connection_closed)
+            self.process_command, self.on_connection_closed, event_loop)
         self.klippy_info: Dict[str, Any] = {}
         self.init_list: List[str] = []
-        self.init_handle: Optional[object] = None
+        self.init_handle: Optional[asyncio.Handle] = None
         self.init_attempts: int = 0
         self.klippy_state: str = "disconnected"
-        self.klippy_disconnect_evt: Optional[Event] = None
+        self.klippy_disconnect_evt: Optional[asyncio.Event] = None
         self.subscriptions: Dict[Subscribable, Dict[str, Any]] = {}
         self.failed_components: List[str] = []
         self.warnings: List[str] = []
 
-        # Server/IOLoop
+        # Tornado Application/Server
         self.server_running: bool = False
         self.moonraker_app = app = MoonrakerApp(config)
         self.register_endpoint = app.register_local_handler
         self.register_static_file_handler = app.register_static_file_handler
         self.register_upload_handler = app.register_upload_handler
-        self.ioloop = IOLoop.current()
+        self.get_websocket_manager = app.get_websocket_manager
+        self.register_api_transport = app.register_api_transport
 
         self.register_endpoint(
             "/server/info", ['GET'], self._handle_info_request)
@@ -136,6 +139,12 @@ class Server:
         self.klippy_apis: KlippyAPI = self.lookup_component('klippy_apis')
         config.validate_config()
 
+    def get_app_args(self) -> Dict[str, Any]:
+        return dict(self.app_args)
+
+    def get_event_loop(self) -> EventLoop:
+        return self.event_loop
+
     def start(self) -> None:
         hostname, hostport = self.get_host_info()
         logging.info(
@@ -143,13 +152,9 @@ class Server:
             f"Hostname: {hostname}")
         self.moonraker_app.listen(self.host, self.port, self.ssl_port)
         self.server_running = True
-        self.ioloop.spawn_callback(self._init_signals)
-        self.ioloop.spawn_callback(self._connect_klippy)
-
-    def _init_signals(self) -> None:
-        aioloop = asyncio.get_event_loop()
-        aioloop.add_signal_handler(
+        self.event_loop.add_signal_handler(
             signal.SIGTERM, self._handle_term_signal)
+        self.event_loop.register_callback(self._connect_klippy)
 
     def add_log_rollover_item(self, name: str, item: str,
                               log: bool = True) -> None:
@@ -170,8 +175,8 @@ class Server:
             self.load_component(config, component)
 
         # check for optional components
-        opt_sections = set([s.split()[0] for s in config.sections()]) - \
-            set(['server', 'system_args'])
+        opt_sections = set([s.split()[0] for s in config.sections()])
+        opt_sections.remove('server')
         for section in opt_sections:
             self.load_component(config, section, None)
 
@@ -182,16 +187,6 @@ class Server:
                        ) -> Union[_T, Any]:
         if component_name in self.components:
             return self.components[component_name]
-        # Make sure component exists
-        mod_path = os.path.join(
-            os.path.dirname(__file__), 'components', component_name + '.py')
-        if not os.path.exists(mod_path):
-            msg = f"Component ({component_name}) does not exist"
-            logging.info(msg)
-            self.failed_components.append(component_name)
-            if isinstance(default, SentinelClass):
-                raise ServerError(msg)
-            return default
         try:
             module = importlib.import_module("components." + component_name)
             func_name = "load_component"
@@ -222,11 +217,15 @@ class Server:
             raise ServerError(f"Component ({component_name}) not found")
         return component
 
+    def set_failed_component(self, component_name: str) -> None:
+        if component_name not in self.failed_components:
+            self.failed_components.append(component_name)
+
     def register_notification(self,
                               event_name: str,
                               notify_name: Optional[str] = None
                               ) -> None:
-        wsm = self.moonraker_app.get_websocket_manager()
+        wsm = self.get_websocket_manager()
         wsm.register_notification(event_name, notify_name)
 
     def register_event_handler(self,
@@ -238,7 +237,7 @@ class Server:
     def send_event(self, event: str, *args) -> None:
         events = self.events.get(event, [])
         for evt in events:
-            self.ioloop.spawn_callback(evt, *args)
+            self.event_loop.register_callback(evt, *args)
 
     def register_remote_method(self,
                                method_name: str,
@@ -270,10 +269,10 @@ class Server:
             return
         ret = await self.klippy_connection.connect(self.klippy_address)
         if not ret:
-            self.ioloop.call_later(.25, self._connect_klippy)  # type: ignore
+            self.event_loop.delay_callback(.25, self._connect_klippy)
             return
         # begin server iniialization
-        self.ioloop.spawn_callback(self._initialize)
+        self.event_loop.register_callback(self._initialize)
 
     def process_command(self, cmd: Dict[str, Any]) -> None:
         method = cmd.get('method', None)
@@ -281,13 +280,14 @@ class Server:
             # This is a remote method called from klippy
             if method in self.remote_methods:
                 params = cmd.get('params', {})
-                self.ioloop.spawn_callback(
+                self.event_loop.register_callback(
                     self._execute_method, method, **params)
             else:
                 logging.info(f"Unknown method received: {method}")
             return
         # This is a response to a request, process
         req_id = cmd.get('id', None)
+        request: Optional[BaseRequest]
         request = self.pending_requests.pop(req_id, None)
         if request is None:
             logging.info(
@@ -321,9 +321,10 @@ class Server:
         logging.info("Klippy Connection Removed")
         self.send_event("server:klippy_disconnect")
         if self.init_handle is not None:
-            self.ioloop.remove_timeout(self.init_handle)
+            self.init_handle.cancel()
+            self.init_handle = None
         if self.server_running:
-            self.ioloop.call_later(.25, self._connect_klippy)  # type: ignore
+            self.event_loop.delay_callback(.25, self._connect_klippy)
         if self.klippy_disconnect_evt is not None:
             self.klippy_disconnect_evt.set()
 
@@ -360,8 +361,8 @@ class Server:
             self.init_handle = None
         else:
             self.init_attempts += 1
-            self.init_handle = self.ioloop.call_later(
-                INIT_TIME, self._initialize)  # type: ignore
+            self.init_handle = self.event_loop.delay_callback(
+                INIT_TIME, self._initialize)
 
     async def _request_endpoints(self) -> None:
         result = await self.klippy_apis.list_endpoints(default=None)
@@ -463,7 +464,7 @@ class Server:
                     else:
                         conn_status[name] = {
                             k: v for k, v in val.items() if k in fields}
-            conn.send_status(conn_status)
+            conn.send_status(conn_status, eventtime)
 
     async def make_request(self, web_request: WebRequest) -> Any:
         rpc_method = web_request.get_endpoint()
@@ -528,7 +529,7 @@ class Server:
         # Create a base klippy request
         base_request = BaseRequest(rpc_method, args)
         self.pending_requests[base_request.id] = base_request
-        self.ioloop.spawn_callback(
+        self.event_loop.register_callback(
             self.klippy_connection.send_request, base_request)
         return await base_request.wait()
 
@@ -537,7 +538,7 @@ class Server:
 
     def _handle_term_signal(self) -> None:
         logging.info(f"Exiting with signal SIGTERM")
-        self.ioloop.spawn_callback(self._stop_server, "terminate")
+        self.event_loop.register_callback(self._stop_server, "terminate")
 
     async def _stop_server(self, exit_reason: str = "restart") -> None:
         self.server_running = False
@@ -555,7 +556,7 @@ class Server:
 
         # Sleep for 100ms to allow connected websockets to write out
         # remaining data
-        await gen.sleep(.1)
+        await asyncio.sleep(.1)
         try:
             await self.moonraker_app.close()
         except Exception:
@@ -564,10 +565,10 @@ class Server:
         # Disconnect from Klippy
         try:
             if self.klippy_connection.is_connected():
-                self.klippy_disconnect_evt = Event()
+                self.klippy_disconnect_evt = asyncio.Event()
                 self.klippy_connection.close()
-                timeout = time.time() + 2.
-                await self.klippy_disconnect_evt.wait(timeout)
+                await asyncio.wait_for(
+                    self.klippy_disconnect_evt.wait(), 2.)
                 self.klippy_disconnect_evt = None
         except Exception:
             logging.exception("Klippy Disconnect Error")
@@ -585,12 +586,11 @@ class Server:
                         f"Error executing 'close()' for component: {name}")
 
         self.exit_reason = exit_reason
-        aioloop = asyncio.get_event_loop()
-        aioloop.remove_signal_handler(signal.SIGTERM)
-        self.ioloop.stop()
+        self.event_loop.remove_signal_handler(signal.SIGTERM)
+        self.event_loop.stop()
 
     async def _handle_server_restart(self, web_request: WebRequest) -> str:
-        self.ioloop.spawn_callback(self._stop_server)
+        self.event_loop.register_callback(self._stop_server)
         return "ok"
 
     async def _handle_info_request(self,
@@ -622,12 +622,13 @@ class Server:
 class KlippyConnection:
     def __init__(self,
                  on_recd: Callable[[dict], None],
-                 on_close: Callable[[], None]
+                 on_close: Callable[[], None],
+                 event_loop: EventLoop
                  ) -> None:
-        self.ioloop = IOLoop.current()
         self.iostream: Optional[iostream.IOStream] = None
         self.on_recd = on_recd
         self.on_close = on_close
+        self.event_loop = event_loop
 
     async def connect(self, address: str) -> bool:
         ksock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -639,7 +640,7 @@ class KlippyConnection:
         logging.info("Klippy Connection Established")
         self.iostream = kstream
         self.iostream.set_close_callback(self.on_close)
-        self.ioloop.spawn_callback(self._read_stream, self.iostream)
+        self.event_loop.register_callback(self._read_stream, self.iostream)
         return True
 
     async def _read_stream(self, stream: iostream.IOStream) -> None:
@@ -682,17 +683,16 @@ class BaseRequest:
         self.id = id(self)
         self.rpc_method = rpc_method
         self.params = params
-        self._event = Event()
+        self._event = asyncio.Event()
         self.response: Any = None
 
     async def wait(self) -> Any:
         # Log pending requests every 60 seconds
         start_time = time.time()
         while True:
-            timeout = time.time() + 60.
             try:
-                await self._event.wait(timeout=timeout)
-            except TimeoutError:
+                await asyncio.wait_for(self._event.wait(), 60.)
+            except asyncio.TimeoutError:
                 pending_time = time.time() - start_time
                 logging.info(
                     f"Request '{self.rpc_method}' pending: "
@@ -726,18 +726,18 @@ def main() -> None:
     parser.add_argument(
         "-n", "--nologfile", action='store_true',
         help="disable logging to a file")
-    system_args = parser.parse_args()
+    cmd_line_args = parser.parse_args()
+    app_args = {'config_file': cmd_line_args.configfile}
 
     # Setup Logging
     version = utils.get_software_version()
-    if system_args.nologfile:
-        log_file = ""
+    if cmd_line_args.nologfile:
+        app_args['log_file'] = ""
     else:
-        log_file = os.path.normpath(os.path.expanduser(
-            system_args.logfile))
-    system_args.logfile = log_file
-    system_args.software_version = version
-    ql, file_logger = utils.setup_logging(log_file, version)
+        app_args['log_file'] = os.path.normpath(
+            os.path.expanduser(cmd_line_args.logfile))
+    app_args['software_version'] = version
+    ql, file_logger = utils.setup_logging(app_args)
 
     if sys.version_info < (3, 7):
         msg = f"Moonraker requires Python 3.7 or above.  " \
@@ -747,30 +747,33 @@ def main() -> None:
         ql.stop()
         exit(1)
 
-    # Start IOLoop and Server
-    io_loop = IOLoop.current()
+    # Start asyncio event loop and server
+    event_loop = EventLoop()
     estatus = 0
     while True:
         try:
-            server = Server(system_args, file_logger)
+            server = Server(app_args, file_logger, event_loop)
         except Exception:
             logging.exception("Moonraker Error")
             estatus = 1
             break
         try:
             server.start()
-            io_loop.start()
+            event_loop.start()
         except Exception:
             logging.exception("Server Running Error")
             estatus = 1
             break
         if server.exit_reason == "terminate":
             break
+        event_loop.close()
         # Since we are running outside of the the server
         # it is ok to use a blocking sleep here
         time.sleep(.5)
         logging.info("Attempting Server Restart...")
-    io_loop.close(True)
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        event_loop = EventLoop()
+    event_loop.close()
     logging.info("Server Shutdown")
     ql.stop()
     exit(estatus)

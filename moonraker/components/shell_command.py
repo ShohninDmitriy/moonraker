@@ -10,8 +10,6 @@ import shlex
 import logging
 import signal
 import asyncio
-from tornado import gen
-from tornado.locks import Lock
 from utils import ServerError
 
 # Annotation imports
@@ -70,7 +68,9 @@ class SCProcess(asyncio.subprocess.Process):
             if not output:
                 break
             if fd == 2 and self.log_stderr:
-                logging.info(f"{self.program_name}: {output.decode()}")
+                logging.info(
+                    f"{self.program_name}: "
+                    f"{output.decode(errors='ignore')}")
             output = output.rstrip(b'\n')
             if output and cb is not None:
                 cb(output)
@@ -147,7 +147,7 @@ class ShellCommand:
         self.proc: Optional[SCProcess] = None
         self.cancelled = False
         self.return_code: Optional[int] = None
-        self.run_lock = Lock()
+        self.run_lock = asyncio.Lock()
 
     async def cancel(self, sig_idx: int = 1) -> None:
         self.cancelled = True
@@ -222,25 +222,26 @@ class ShellCommand:
                         complete = not self.cancelled
                         if self.log_stderr and stderr:
                             logging.info(
-                                f"{self.command[0]}: {stderr.decode()}")
+                                f"{self.command[0]}: "
+                                f"{stderr.decode(errors='ignore')}")
                     if self._check_proc_success(complete, log_complete):
                         self.factory.remove_running_command(self)
-                        return stdout.decode().rstrip("\n")
+                        return stdout.decode(errors='ignore').rstrip("\n")
                     if stdout:
                         logging.debug(
                             f"Shell command '{self.name}' output:"
-                            f"\n{stdout.decode()}")
+                            f"\n{stdout.decode(errors='ignore')}")
                     if self.cancelled and not timed_out:
                         break
                 retries -= 1
-                await gen.sleep(.5)
+                await asyncio.sleep(.5)
             self.factory.remove_running_command(self)
             raise ShellCommandError(
                 f"Error running shell command: '{self.command}'",
                 self.return_code, stdout, stderr)
 
     async def _create_subprocess(self) -> bool:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def protocol_factory():
             return asyncio.subprocess.SubprocessStreamProtocol(
@@ -292,7 +293,10 @@ class ShellCommandFactory:
         self.running_commands.add(cmd)
 
     def remove_running_command(self, cmd: ShellCommand) -> None:
-        self.running_commands.remove(cmd)
+        try:
+            self.running_commands.remove(cmd)
+        except KeyError:
+            pass
 
     def build_shell_command(self,
                             cmd: str,

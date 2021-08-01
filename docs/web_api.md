@@ -1,10 +1,10 @@
 #
 
-Most API methods are supported over both the Websocket and HTTP transports.
-File Transfer and `/access` requests are only available over HTTP. The
-Websocket is required to receive server generated events such as gcode
-responses.  For information on how to set up the Websocket, please see the
-Appendix at the end of this document.
+Most API methods are supported over the Websocket, HTTP, and MQTT
+(if configured) transports. File Transfer and `/access` requests are only
+available over HTTP. The Websocket is required to receive server generated
+events such as gcode responses.  For information on how to set up the
+Websocket, please see the Appendix at the end of this document.
 
 ### HTTP API Overview
 
@@ -71,10 +71,19 @@ thus using this functionality should be seen as a "last resort."  If at
 all possible clients should attempt to put these arguments in the body
 of a request.
 
-### Websocket API Overview
+### JSON-RPC API Overview
 
-The Websocket API is based on JSON-RPC, an encoded request should look
-something like:
+The Websocket and MQTT transports use the [JSON-RPC 2.0](https://jsonrpc.org)
+protocol.  The Websocket transmits objects in a text frame,  whereas MQTT
+transmits them in the payload of a topic.  When MQTT is configured Moonraker
+subscribes to an api request topic. After an api request is processed Moonraker
+publishes the return value to a response topic. By default these topics are
+`{instance_name}/moonraker/api/request` and
+`{instance_name}/moonraker/api/response`.  The `{instance_name}` should be a
+unique identifier for each instance of Moonraker and defaults to the machine's
+host name.
+
+An encoded request should look something like:
 ```json
 {
     "jsonrpc": "2.0",
@@ -85,9 +94,18 @@ something like:
 ```
 
 The `params` field may be left out if the API request takes no arguments.
-The `id` should be a unique integer value that has no chance of colliding
+The `id` should be a unique value that has no chance of colliding
 with other JSON-RPC requests.  The `method` is the API method, as defined
 for each API in this document.
+
+!!! tip
+    MQTT requests may provide an optional `mqtt_timestamp` keyword
+    argument in the `params` field of the JSON-RPC request.  To avoid
+    potential collisions from time drift it is recommended to specify
+    the timestamp in microseconds since the Unix Epoch.  If provided
+    Moonraker will use the timestamp to discard duplicate requests.
+    It is recommended to either provide a timestamp or publish API
+    requests at a QoS level of 0 or 2.
 
 A successful request will return a response like the following:
 ```json
@@ -114,7 +132,7 @@ Some errors may not return a request ID, such as an improperly formatted request
 
 The `test/client` folder includes a basic test interface with example usage for
 most of the requests below.  It also includes a basic JSON-RPC implementation
-that uses promises to return responses and errors (see json-rcp.js).
+that uses promises to return responses and errors (see json-rpc.js).
 
 ### Printer Administration
 
@@ -302,6 +320,9 @@ POST /printer/objects/subscribe?connection_id=123456789&gcode_move&extruder`
     [ID reported](#get-websocket-id) from a currently connected websocket. A
     request that includes only the `connection_id` argument will cancel the
     subscription on the specified websocket.
+
+    This request is not available over MQTT, as it is not possible to
+    associate a connected websocket with an MQTT client.
 
 JSON-RPC request:
 ```json
@@ -981,24 +1002,35 @@ An object in the following format:
 {
     "moonraker_stats": [
         {
-            "time": 1615837812.0894408,
-            "cpu_usage": 1.99,
-            "memory": 23636,
+            "time": 1626612666.850755,
+            "cpu_usage": 2.66,
+            "memory": 24732,
             "mem_units": "kB"
         },
         {
-            "time": 1615837813.0890627,
-            "cpu_usage": 2.09,
-            "memory": 23636,
+            "time": 1626612667.8521338,
+            "cpu_usage": 2.62,
+            "memory": 24732,
             "mem_units": "kB"
-        },
-        ...
+        }
     ],
     "throttled_state": {
         "bits": 0,
         "flags": []
     },
-    "cpu_temp": 46.148
+    "cpu_temp": 45.622,
+    "network": {
+        "lo": {
+            "rx_bytes": 113516429,
+            "tx_bytes": 113516429,
+            "bandwidth": 3342.68
+        },
+        "wlan0": {
+            "rx_bytes": 48471767,
+            "tx_bytes": 113430843,
+            "bandwidth": 4455.91
+        }
+    }
 }
 ```
 Process information is sampled every second.  The `moonraker_stats` field
@@ -1037,6 +1069,18 @@ may not still be active).  If `vcgencmd` is not available
 If the system reports CPU temp at `/sys/class/thermal/thermal_zone0`
 then temperature will be supplied in the `cpu_temp` field.  Otherwise
 the field will be set to `null`.
+
+If the system reports network statistics at `/proc/net/dev` then the
+`network` field will contain network statistics.  All available interfaces
+will be tracked.  Each interface reports the following fields:
+
+- `rx_bytes`: total number of bytes received over the interface
+- `tx_bytes`: total number of bytes transferred over the interface
+- `bandwidth`: estimated current bandwidth used (both rx and tx) in
+  bytes/second
+
+If network information is not available then the `network` field will
+contain an empty object.
 
 ### File Operations
 
@@ -1172,7 +1216,7 @@ modified time, and size.
             "width": 400,
             "height": 300,
             "size": 73308,
-            "relative_path": "lthumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-400x300.png"
+            "relative_path": ".thumbs/3DBenchy_0.15mm_PLA_MK3S_2h6m-400x300.png"
         }
     ],
     "first_layer_bed_temp": 60,
@@ -2036,6 +2080,10 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             ]
         },
         "moonraker": {
+            "type": "zip_beta",
+            "channel": "beta",
+            "need_channel_update": false,
+            "pristine": true,
             "remote_alias": "origin",
             "branch": "master",
             "owner": "Arksine",
@@ -2063,6 +2111,10 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             "remote_version": "v1.10.0"
         },
         "klipper": {
+            "type": "zip_beta",
+            "channel": "beta",
+            "need_channel_update": false,
+            "pristine": true,
             "remote_alias": "origin",
             "branch": "master",
             "owner": "KevinOConnor",
@@ -2112,9 +2164,23 @@ Below is an explanation for each field:
   reported as seconds since the epoch (aka Unix Time).
 
 The `moonraker`, `klipper` packages, along with and clients configured
-as git repos have the following fields:
+as applications have the following fields:
 
-- `owner`: the owner of the repo
+- `configured_type`: the application type configured by the user
+- `detected_type`:  the applicaiton type as detected by Moonraker.
+- `channel`:  the currently configured update channel.  For Moonraker
+  and Klipper this is set in the `[update_manager]` configuration.
+  For clients the channel is determined by the configured type
+- `need_channel_update`: This will be set to `true` if Moonraker has
+  detected that a channel swap is necessary (ie: the configured type does
+  not match the detected type). The channel swap will be performed on the
+  next update.
+- `pristine`: For `zip` and `zip_beta` types this is set to `true` if an
+  applications source checksum matches the one generated  when the app was
+  built.  This value will be set to the opposite of "dirty" for git repos.
+  Note that a zip application can still be updated if the repo is not
+  pristine.
+- `owner`: the owner of the repo / application
 - `branch`: the name of the current git branch.  This should typically
     be "master".
 - `remote_alias`: the alias for the remote.  This should typically be
@@ -2125,9 +2191,14 @@ as git repos have the following fields:
 - `current_hash`: hash of the most recent commit on disk
 - `remote_hash`: hash of the most recent commit pushed to the remote
 - `is_valid`: true if installation is a valid git repo on the master branch
-    and an "origin" set to the official remote
-- `is_dirty`: true if the repo has been modified
-- `detached`: true if the repo is currently in a detached state
+    and an "origin" set to the official remote.  For `zip` and `zip_beta`
+    types this will report false if Moonraker is unable to fetch the
+    current repo state from GitHub.
+- `is_dirty`: true if the repo has been modified.  This will always be false
+  for `zip` and `zip_beta` types.
+- `detached`: true if the repo is currently in a detached state.  For `zip`
+  and `zip_beta` types it is considered detached if the local release info
+  does not match what is present on the remote.
 - `debug_enabled`: True when `enable_repo_debug` has been configured.  This
     will bypass repo validation allowing detached updates, and updates from
     a remote/branch other than than the primary (typically origin/master).
@@ -2153,6 +2224,32 @@ The `system` package has the following fields:
 - `package_count`: the number of system packages available for update
 - `package_list`: an array containing the names of packages available
   for update
+
+### Perform a full update
+Attempts to update all configured items in Moonraker.  Updates are
+performed in the following order:
+
+- `system` if enabled
+- All configured clients
+- Klipper
+- Moonraker
+
+HTTP request:
+```http
+POST /machine/update/full
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "machine.update.full",
+    "id": 4645
+}
+```
+Returns:
+
+`ok` when complete
+
 
 #### Update Moonraker
 Pulls the most recent version of Moonraker from GitHub and restarts
@@ -2794,7 +2891,7 @@ JSON-RPC request:
     "jsonrpc": "2.0",
     "method":"server.history.get_job",
     "params":{"uid": "{uid}"},
-    "id": 4564,
+    "id": 4564
 }
 ```
 Returns:
@@ -2848,6 +2945,7 @@ An array of deleted job ids
     "000001",
 ]
 ```
+
 
 ## Timelapse API
 The APIs below are available when the `[timelapse]` plugin has been configured.
@@ -2927,6 +3025,134 @@ or error
 	}
 }
 ```
+=======
+### MQTT APIs
+
+The following API is available when `[mqtt]` has been configured.
+
+!!! Note
+    These requests are not available over the `mqtt` transport as they
+    are redundant.  MQTT clients can publish and subscribe to
+    topics directly.
+
+#### Publish a topic
+
+HTTP request:
+```http
+POST /server/mqtt/publish
+Content-Type: application/json
+
+{
+    "topic": "home/test/pub",
+    "payload": "hello",
+    "qos": 0,
+    "retain": false,
+    "timeout": 5
+}
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method":"server.mqtt.publish",
+    "params":{
+        "topic": "home/test/pub",
+        "payload": "hello",
+        "qos": 0,
+        "retain": false,
+        "timeout": 5
+    },
+    "id": 4564
+}
+```
+Only the `topic` parameter is required.  Below is an explanation for
+each paramater:
+
+- `topic`: The topic to publish.
+- `payload`: Payload to send with the topic.  May be a boolean, float,
+  integer, string, object, or array. All values are converted to strings prior
+  to publishing.  Objects and Arrays are JSON encoded.  If omitted an empty
+  payload is sent.
+- `qos`: QOS level to use when publishing the topic.  Must be an integer value
+  from 0 to 2.  If omitted the system configured default is used.
+- `retain`: If set to `true` the MQTT broker will retain the payload of this
+  request.  Note that only the mostly recently tagged payload is retained.
+  When other clients first subscribe to the topic they immediately recieve the
+  retained message.  The default is `false`.
+- `timeout`: A float value in seconds.  By default requests with QoS levels of
+  1 or 2 will block until the Broker acknowledges confirmation.  This option
+  applies a timeout to the request, returning a 504 error if the timeout is
+  exceeded. Note that the topic will still be published if the QoS level is 1
+  or 2.
+
+!!! tip
+    To clear a retained value of a topic, publish the topic with an empty
+    payload and `retain` set to `true`.
+
+Returns:
+
+The published topic:
+```json
+{
+    "topic": "home/test/pub"
+}
+```
+
+#### Subscribe to a topic
+
+
+HTTP request:
+```http
+POST /server/mqtt/subscribe
+Content-Type: application/json
+
+{
+    "topic": "home/test/sub",
+    "qos": 0,
+    "timeout": 5
+}
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method":"server.mqtt.subscribe",
+    "params":{
+        "topic": "home/test/sub",
+        "qos": 0,
+        "timeout": 5
+    },
+    "id": 4564
+}
+```
+
+Only the `topic` parameter is required.  Below is an explanation for
+each paramater:
+
+- `topic`: The topic to subscribe.  Note that wildcards may not be used.
+- `qos`: QOS level to use when subscribing to the topic.  Must be an integer
+  value from 0 to 2.  If omitted the system configured default is used.
+- `timeout`: A float value in seconds.  By default requests will block
+  indefinitely until a response is received. This option applies a timeout to
+  the request, returning a 504 error if the timeout is exceeded.  The
+  subscription will be removed after a timeout.
+
+!!! note
+    If the topic was previously published with a retained payload this request
+    will return with the retained value.
+
+Returns:
+
+The subscribed topic and its payload:
+```json
+{
+    "topic": "home/test/pub",
+    "payload": "test"
+}
+```
+If the payload is json encodable it will be returned as an object or array.
+Otherwise it will be a string.
+
 
 ### Websocket notifications
 Printer generated events are sent over the websocket as JSON-RPC 2.0
@@ -2969,12 +3195,16 @@ Status Subscriptions arrive as a "notify_status_update" notification:
 {
     "jsonrpc": "2.0",
     "method": "notify_status_update",
-    "params": [{<status object>}]
+    "params": [{<status object>}, <eventtime>]
 }
 ```
 The structure of the `status object` is identical to the structure that is
 returned from an [object query's](#query-printer-object-status)
 `status` field.
+
+The `eventtime` is a timestamp generated by Klipper when
+the update was originally pushed.  This timestamp is a float value,
+relative to Klipper's monotonic clock.
 
 #### Klippy Ready
 Notify clients when Klippy has reported a ready state
@@ -3121,7 +3351,19 @@ process statistics:
             "memory": 23636,
             "mem_units": "kB"
         },
-        "cpu_temp": 44.008
+        "cpu_temp": 44.008,
+        "network": {
+            "lo": {
+                "rx_bytes": 114555457,
+                "tx_bytes": 114555457,
+                "bandwidth": 2911.49
+            },
+            "wlan0": {
+                "rx_bytes": 48773134,
+                "tx_bytes": 115035939,
+                "bandwidth": 3458.77
+            }
+        }
     }]
 }
 ```

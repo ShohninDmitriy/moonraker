@@ -5,14 +5,14 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from __future__ import annotations
+import os
+import sys
 import logging
 import json
 import struct
 import socket
-import gpiod
-from tornado.ioloop import IOLoop
+import asyncio
 from tornado.iostream import IOStream
-from tornado.locks import Lock
 from tornado.httpclient import AsyncHTTPClient
 from tornado.escape import json_decode
 
@@ -28,6 +28,20 @@ from typing import (
     Tuple,
     Union,
 )
+
+# Special handling for gpiod import
+HAS_GPIOD = True
+DIST_PATH = "/usr/lib/python3/dist-packages"
+if os.path.exists(DIST_PATH):
+    sys.path.insert(0, DIST_PATH)
+    try:
+        import gpiod
+    except ImportError:
+        HAS_GPIOD = False
+    sys.path.pop(0)
+else:
+    HAS_GPIOD = False
+
 if TYPE_CHECKING:
     from confighelper import ConfigHelper
     from websockets import WebRequest
@@ -37,6 +51,10 @@ if TYPE_CHECKING:
 class PrinterPower:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
+        if not HAS_GPIOD:
+            self.server.add_warning(
+                "Unable to load gpiod library, GPIO power "
+                "devices will not be loaded")
         self.chip_factory = GpioChipFactory()
         self.devices: Dict[str, PowerDevice] = {}
         prefix_sections = config.get_prefix_sections("power")
@@ -60,6 +78,8 @@ class PrinterPower:
                     raise config.error(f"Unsupported Device Type: {dev_type}")
                 dev = dev_class(cfg)
                 if isinstance(dev, GpioDevice):
+                    if not HAS_GPIOD:
+                        continue
                     dev.configure_line(cfg, self.chip_factory)
                 self.devices[dev.get_name()] = dev
         except Exception:
@@ -86,7 +106,8 @@ class PrinterPower:
         self.server.register_event_handler(
             "server:klippy_shutdown", self._handle_klippy_shutdown)
         self.server.register_notification("power:power_changed")
-        IOLoop.current().spawn_callback(
+        event_loop = self.server.get_event_loop()
+        event_loop.register_callback(
             self._initalize_devices, list(self.devices.values()))
 
     async def _check_klippy_printing(self) -> bool:
@@ -99,10 +120,30 @@ class PrinterPower:
     async def _initalize_devices(self,
                                  inital_devs: List[PowerDevice]
                                  ) -> None:
-        for dev in inital_devs:
-            ret = dev.initialize()
-            if ret is not None:
-                await ret
+        event_loop = self.server.get_event_loop()
+        cur_time = event_loop.get_loop_time()
+        endtime = cur_time + 120.
+        query_devs = inital_devs
+        failed_devs: List[PowerDevice] = []
+        while cur_time < endtime:
+            for dev in query_devs:
+                ret = dev.initialize()
+                if ret is not None:
+                    await ret
+                if dev.get_state() == "error":
+                    failed_devs.append(dev)
+            if not failed_devs:
+                logging.debug("All power devices initialized")
+                return
+            query_devs = failed_devs
+            failed_devs = []
+            await asyncio.sleep(2.)
+            cur_time = event_loop.get_loop_time()
+        if failed_devs:
+            failed_names = [d.get_name() for d in failed_devs]
+            self.server.add_warning(
+                "The following power devices failed init:"
+                f" {failed_names}")
 
     async def _handle_klippy_shutdown(self) -> None:
         for name, dev in self.devices.items():
@@ -198,8 +239,8 @@ class PrinterPower:
         if device not in self.devices:
             logging.info(f"No device found: {device}")
             return
-        ioloop = IOLoop.current()
-        ioloop.spawn_callback(
+        event_loop = self.server.get_event_loop()
+        event_loop.register_callback(
             self._process_request, self.devices[device], status)
 
     async def add_device(self, name: str, device: PowerDevice) -> None:
@@ -242,6 +283,9 @@ class PowerDevice:
     def get_name(self) -> str:
         return self.name
 
+    def get_state(self) -> str:
+        return self.state
+
     def get_device_info(self) -> Dict[str, Any]:
         return {
             'device': self.name,
@@ -255,10 +299,10 @@ class PowerDevice:
 
     def run_power_changed_action(self) -> None:
         if self.state == "on" and self.klipper_restart:
-            ioloop = IOLoop.current()
+            event_loop = self.server.get_event_loop()
             kapis: APIComp = self.server.lookup_component("klippy_apis")
-            ioloop.call_later(
-                self.restart_delay, kapis.do_restart,  # type:ignore
+            event_loop.delay_callback(
+                self.restart_delay, kapis.do_restart,
                 "FIRMWARE_RESTART")
 
     def has_off_when_shutdown(self) -> bool:
@@ -286,7 +330,7 @@ class HTTPDevice(PowerDevice):
                  ) -> None:
         super().__init__(config)
         self.client = AsyncHTTPClient()
-        self.request_mutex = Lock()
+        self.request_mutex = asyncio.Lock()
         self.addr: str = config.get("address")
         self.port = config.getint("port", default_port)
         self.user = config.get("user", default_user)
@@ -435,7 +479,7 @@ class TPLinkSmartPlug(PowerDevice):
     START_KEY = 0xAB
     def __init__(self, config: ConfigHelper) -> None:
         super().__init__(config)
-        self.request_mutex = Lock()
+        self.request_mutex = asyncio.Lock()
         self.addr: List[str] = config.get("address").split('/')
         self.port = config.getint("port", 9999)
 
@@ -657,16 +701,17 @@ class HomeAssistant(HTTPDevice):
         super().__init__(config, default_port=8123)
         self.device: str = config.get("device")
         self.token: str = config.get("token")
+        self.domain: str = config.get("domain", "switch")
 
     async def _send_homeassistant_command(self,
                                           command: str
                                           ) -> Dict[Union[str, int], Any]:
         if command == "on":
-            out_cmd = f"api/services/switch/turn_on"
+            out_cmd = f"api/services/{self.domain}/turn_on"
             body = {"entity_id": self.device}
             method = "POST"
         elif command == "off":
-            out_cmd = f"api/services/switch/turn_off"
+            out_cmd = f"api/services/{self.domain}/turn_off"
             body = {"entity_id": self.device}
             method = "POST"
         elif command == "info":

@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license
 
 from __future__ import annotations
+import asyncio
 import base64
 import uuid
 import hashlib
@@ -17,7 +18,7 @@ import re
 import socket
 import logging
 import json
-from tornado.ioloop import IOLoop, PeriodicCallback
+from tornado.ioloop import PeriodicCallback
 from tornado.web import HTTPError
 from libnacl.sign import Signer, Verifier
 
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
     DBComp = database.MoonrakerDatabase
     IPAddr = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
     IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
-    OneshotToken = Tuple[IPAddr, Optional[Dict[str, Any]], object]
+    OneshotToken = Tuple[IPAddr, Optional[Dict[str, Any]], asyncio.Handle]
 
 # Helpers for base64url encoding and decoding
 def base64url_encode(data: bytes) -> bytes:
@@ -118,8 +119,14 @@ class Authorization:
                 raise config.error(
                     f"Unsafe CORS Domain '{domain}'.  Wildcards are not"
                     " permitted in the top level domain.")
-            self.cors_domains.append(
-                domain.replace(".", "\\.").replace("*", ".*"))
+            if domain.endswith("/"):
+                self.server.add_warning(
+                    f"Invalid domain '{domain}' in option 'cors_domains',  "
+                    "section [authorization].  Domain's cannot contain a "
+                    "trailing slash.")
+            else:
+                self.cors_domains.append(
+                    domain.replace(".", "\\.").replace("*", ".*"))
 
         # Get Trusted Clients
         self.trusted_ips: List[IPAddr] = []
@@ -168,28 +175,28 @@ class Authorization:
         self.permitted_paths.add("/access/refresh_jwt")
         self.server.register_endpoint(
             "/access/login", ['POST'], self._handle_login,
-            protocol=['http'])
+            transports=['http'])
         self.server.register_endpoint(
             "/access/logout", ['POST'], self._handle_logout,
-            protocol=['http'])
+            transports=['http'])
         self.server.register_endpoint(
             "/access/refresh_jwt", ['POST'], self._handle_refresh_jwt,
-            protocol=['http'])
+            transports=['http'])
         self.server.register_endpoint(
             "/access/user", ['GET', 'POST', 'DELETE'],
-            self._handle_user_request, protocol=['http'])
+            self._handle_user_request, transports=['http'])
         self.server.register_endpoint(
             "/access/users/list", ['GET'], self._handle_list_request,
-            protocol=['http'])
+            transports=['http'])
         self.server.register_endpoint(
             "/access/user/password", ['POST'], self._handle_password_reset,
-            protocol=['http'])
+            transports=['http'])
         self.server.register_endpoint(
             "/access/api_key", ['GET', 'POST'],
-            self._handle_apikey_request, protocol=['http'])
+            self._handle_apikey_request, transports=['http'])
         self.server.register_endpoint(
             "/access/oneshot_token", ['GET'],
-            self._handle_oneshot_request, protocol=['http'])
+            self._handle_oneshot_request, transports=['http'])
         self.server.register_notification("authorization:user_created")
         self.server.register_notification("authorization:user_deleted")
 
@@ -359,7 +366,8 @@ class Authorization:
             username, jwk_id, private_key, token_type="refresh",
             exp_time=datetime.timedelta(days=self.login_timeout))
         if create:
-            IOLoop.current().call_later(
+            event_loop = self.server.get_event_loop()
+            event_loop.delay_callback(
                 .005, self.server.send_event,
                 "authorization:user_created",
                 {'username': username})
@@ -386,7 +394,8 @@ class Authorization:
             raise self.server.error(f"No registered user: {username}")
         self.public_jwks.pop(self.users.get(f"{username}.jwk_id"), None)
         del self.users[username]
-        IOLoop.current().call_later(
+        event_loop = self.server.get_event_loop()
+        event_loop.delay_callback(
             .005, self.server.send_event,
             "authorization:user_deleted",
             {'username': username})
@@ -505,8 +514,8 @@ class Authorization:
                           user: Optional[Dict[str, Any]]
                           ) -> str:
         token = base64.b32encode(os.urandom(20)).decode()
-        ioloop = IOLoop.current()
-        hdl = ioloop.call_later(
+        event_loop = self.server.get_event_loop()
+        hdl = event_loop.delay_callback(
             ONESHOT_TIMEOUT, self._oneshot_token_expire_handler, token)
         self.oneshot_tokens[token] = (ip_addr, user, hdl)
         return token
@@ -568,7 +577,7 @@ class Authorization:
                              ) -> Optional[Dict[str, Any]]:
         if token in self.oneshot_tokens:
             ip_addr, user, hdl = self.oneshot_tokens.pop(token)
-            IOLoop.current().remove_timeout(hdl)
+            hdl.cancel()
             if cur_ip != ip_addr:
                 logging.info(f"Oneshot Token IP Mismatch: expected{ip_addr}"
                              f", Recd: {cur_ip}")
