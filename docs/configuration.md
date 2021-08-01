@@ -507,7 +507,7 @@ is_system_service: True
 ## `[Timelapse]`
 Generate Timelapse of a Print
 
-This Plugin depends on FFMPEG and mjpegstreamer installed on the System which
+This Component depends on FFMPEG and mjpegstreamer installed on the System which
 is preinstalled in MainsailOs and FluidPI.
 If not you can install it manually using this Guide:
 https://github.com/cncjs/cncjs/wiki/Setup-Guide:-Raspberry-Pi-%7C-MJPEG-Streamer-Install-&-Setup-&-FFMpeg-Recording#mjpeg-streamer-install--setup
@@ -572,11 +572,23 @@ Add the macro to your printer.cfg
 ```ini
 # printer.cfg
 
-[gcode_macro TIMELAPSE_TAKE_FRAME]
+[gcode_macro TIMELAPSE_NEW_FRAME]
 gcode:
  {action_call_remote_method("timelapse_newframe")}
+ ; leave this in a separate macro!
+
+[gcode_macro TIMELAPSE_TAKE_FRAME]
+gcode:
+  ;SAVE_GCODE_STATE NAME=SNAPSHOT
+  ;M117 move your head/bed here, do retracts and so on
+  ;G4 P500 ;dwell
+  TIMELAPSE_NEW_FRAME
+  ;G4 P500 ;moar dwelling
+  ;M117 don't forget to un-retract!
+  ;RESTORE_GCODE_STATE NAME=SNAPSHOT
+
 ```
-Note: You can add extra gcode to the macro if you like to move your
+Note: You can edit and add extra gcode to the TIMELASPE_TAKE_FRAME macro if you like to move your
 printhead to a specific position, before taking a picture.
 
 ### Add the macro to your Slicer:
@@ -594,8 +606,45 @@ Printer Settings -> Custom G-code -> Before layer change Gcode -> ``TIMELAPSE_TA
 Extensions -> Post Processing -> Modify G-Code ->   
 Add a script -> Insert at layer change -> G-code to insert = ``TIMELAPSE_TAKE_FRAME``
 
-![PCura Configuration](assets/img/timelapse-cura-config.png)
-=======
+![Cura Configuration](assets/img/timelapse-cura-config.png)
+
+### Timebased frame capture
+If your slicer doesn't support support adding gcode at layer change or you like
+a timebased timelapse more add following to your printer.cfg:
+
+```ini
+# printer.cfg
+
+[delayed_gcode HYPERLAPSE_LOOP]
+gcode:
+  HYPERLAPSE
+
+[gcode_macro HYPERLAPSE]
+variable_cycle: 0
+gcode:
+  {% if cycle > 0 %}
+    TIMELAPSE_NEW_FRAME
+    UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION={printer["gcode_macro HYPERLAPSE"].cycle}
+  {% endif %}
+
+[gcode_macro HYPERLAPSE_START]
+variable_defaultcycle: 30  # edit the "cycle" time here (in seconds)
+gcode:
+  {% if params.VALUE is defined %}
+    SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=cycle VALUE={params.VALUE}
+  {% else %}
+    SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=cycle VALUE={printer["gcode_macro HYPERLAPSE_START"].defaultcycle}
+  {% endif %}
+  HYPERLAPSE
+  
+[gcode_macro HYPERLAPSE_STOP]
+gcode:
+  UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION=0
+
+```
+then add ``HYPERLAPSE_START`` to your start gcode
+and ``HYPERLAPSE_STOP`` to your end gcode.
+
 ## `[mqtt]`
 
 Enables an MQTT Client.  When configured most of Moonraker's APIs are availble
