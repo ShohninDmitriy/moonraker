@@ -90,13 +90,10 @@ class Timelapse:
         self.server.register_endpoint(
             "/machine/timelapse/lastframeinfo", ['GET'],
             self.webrequest_timelapse_lastframeinfo)
-        self.shell_cmd: SCMDComp = self.server.lookup_component(
-            'shell_command'
-        )
 
     async def webrequest_timelapse_lastframeinfo(self,
                                                  webrequest: WebRequest
-                                                 ) -> str:
+                                                 ) -> Dict[str, Any]:
         return {
             'framecount': self.framecount,
             'lastframefile': self.lastframefile
@@ -104,7 +101,7 @@ class Timelapse:
 
     async def webrequest_timelapse_settings(self,
                                             webrequest: WebRequest
-                                            ) -> str:
+                                            ) -> Dict[str, Any]:
         action = webrequest.get_action()
         if action == 'POST':
             args = webrequest.get_args()
@@ -158,6 +155,7 @@ class Timelapse:
             self.lastframefile = framefile
             logging.debug(f"cmd: {cmd}")
 
+            shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
             scmd = self.shell_cmd.build_shell_command(cmd, None)
             try:
                 cmdstatus = await scmd.run(timeout=2., verbose=False)
@@ -207,7 +205,7 @@ class Timelapse:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
 
-    async def timelapse_render(self, webrequest=None) -> str:
+    async def timelapse_render(self, webrequest=None) -> Dict[str, str]:
         filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
         self.framecount = len(filelist)
         result = {'action': 'render'}
@@ -270,13 +268,14 @@ class Timelapse:
                     'pixelformat': self.pixelformat
                 }
             })
-            self.notify_timelapse_event(result)
-
+            
+            
             # run the command
+            shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
+            self.notify_timelapse_event(result)
             scmd = self.shell_cmd.build_shell_command(cmd, self.ffmpeg_cb)
             try:
-                cmdstatus = await scmd.run(timeout=None,
-                                           verbose=True,
+                cmdstatus = await scmd.run(verbose=True,
                                            log_complete=False
                                            )
             except Exception:
@@ -325,7 +324,7 @@ class Timelapse:
 
         return result
 
-    def ffmpeg_cb(self, response: str) -> None:
+    def ffmpeg_cb(self, response: bytes) -> None:
         # logging.debug(f"ffmpeg_cb: {response}")
         lastcmdreponse = response.decode("utf-8")
         try:
@@ -348,7 +347,7 @@ class Timelapse:
             }
             self.notify_timelapse_event(result)
 
-    def notify_timelapse_event(self, result: str) -> None:
+    def notify_timelapse_event(self, result: Dict[str, Any]) -> None:
         logging.debug(f"notify_timelapse_event: {result}")
         self.server.send_event("timelapse:timelapse_event", result)
 
