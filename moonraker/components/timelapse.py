@@ -3,6 +3,7 @@
 # Copyright (C) 2020 Christoph Frei <fryakatkop@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 import logging
 import os
 import glob
@@ -10,10 +11,19 @@ import re
 from datetime import datetime
 from tornado.ioloop import IOLoop
 
+# Annotation imports
+from typing import (
+    TYPE_CHECKING,
+)
+if TYPE_CHECKING:
+    from confighelper import ConfigHelper
+    from websockets import WebRequest
+    from . import shell_command
+    SCMDComp = shell_command.ShellCommandFactory
 
 class Timelapse:
 
-    def __init__(self, config):
+    def __init__(self, config: ConfigHelper) -> None:
         # setup vars
         self.renderisrunning = False
         self.takingframe = False
@@ -34,10 +44,10 @@ class Timelapse:
             "snapshoturl", "http://localhost:8080/?action=snapshot")
         self.pixelformat = config.get("pixelformat", "yuv420p")
         self.extraoutputparams = config.get("extraoutputparams", "")
-        out_dir_cfg = config.get("output_path", "~/timelapse/")
+        out_dir_cfg = config.get("output_path", "~/timelapse/")      
         temp_dir_cfg = config.get("frame_path", "/tmp/timelapse/")
         self.ffmpeg_binary_path = config.get(
-            "ffmpeg_binary_path", "/usr/bin/ffmpeg")
+            "ffmpeg_binary_path", "/usr/bin/ffmpeg") 
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -78,13 +88,13 @@ class Timelapse:
             "/machine/timelapse/lastframeinfo", ['GET'],
             self.webrequest_timelapse_lastframeinfo)
 
-    async def webrequest_timelapse_lastframeinfo(self, webrequest):
+    async def webrequest_timelapse_lastframeinfo(self, webrequest: WebRequest) -> str:
         return {
             'framecount': self.framecount,
             'lastframefile': self.lastframefile
         }
 
-    async def webrequest_timelapse_settings(self, webrequest):
+    async def webrequest_timelapse_settings(self, webrequest: WebRequest) -> str:
         action = webrequest.get_action()
         if action == 'POST':
             args = webrequest.get_args()
@@ -121,14 +131,14 @@ class Timelapse:
             'min_framerate': self.min_framerate
         }
 
-    def call_timelapse_newframe(self):
+    def call_timelapse_newframe(self) -> None:
         if self.enabled:
             ioloop = IOLoop.current()
             ioloop.spawn_callback(self.timelapse_newframe)
         else:
             logging.debug("NEW_FRAME macro ignored timelapse is disabled")
 
-    async def timelapse_newframe(self):
+    async def timelapse_newframe(self) -> None:
         if not self.takingframe:
             self.takingframe = True
             self.framecount += 1
@@ -138,8 +148,8 @@ class Timelapse:
             self.lastframefile = framefile
             logging.debug(f"cmd: {cmd}")
 
-            shell_command = self.server.lookup_component('shell_command')
-            scmd = shell_command.build_shell_command(cmd, None)
+            shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
+            scmd = shell_cmd.build_shell_command(cmd, None)
             try:
                 cmdstatus = await scmd.run(timeout=2., verbose=False)
             except Exception:
@@ -160,12 +170,12 @@ class Timelapse:
             self.notify_timelapse_event(result)
             self.takingframe = False
 
-    async def webrequest_timelapse_render(self, webrequest):
+    async def webrequest_timelapse_render(self, webrequest: WebRequest) -> str:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
         return "ok"
 
-    def handle_status_update(self, status):
+    def handle_status_update(self, status: str) -> None:
         if status == "File selected":
             # print_started
             self.timelapse_cleanup()
@@ -175,7 +185,7 @@ class Timelapse:
                 ioloop = IOLoop.current()
                 ioloop.spawn_callback(self.timelapse_render)
 
-    def timelapse_cleanup(self):
+    def timelapse_cleanup(self) -> None:
         logging.debug("timelapse_cleanup")
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         if filelist:
@@ -184,11 +194,11 @@ class Timelapse:
         self.framecount = 0
         self.lastframefile = ""
 
-    def call_timelapse_render(self):
+    def call_timelapse_render(self) -> None:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
 
-    async def timelapse_render(self, webrequest=None):
+    async def timelapse_render(self, webrequest=None) -> str:
         filelist = glob.glob(self.temp_dir + "frame*.jpg")
         self.framecount = len(filelist)
 
@@ -210,7 +220,7 @@ class Timelapse:
         else:
             self.renderisrunning = True
 
-            # get  printed filename
+            # get printed filename
             klippy_apis = self.server.lookup_component("klippy_apis")
             kresult = await klippy_apis.query_objects({'print_stats': None})
             pstats = kresult.get("print_stats", {})
@@ -223,12 +233,14 @@ class Timelapse:
             else:
                 fps = self.framerate
 
-            # build shell command
+            # prepare output filenames
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
             inputfiles = self.temp_dir + "frame%6d.jpg"
             outsuffix = ".mp4"
             outfile = "timelapse_" + gcodefile + "_" + date_time + outsuffix
+
+            # build shell command
             cmd = self.ffmpeg_binary_path \
                 + " -r " + str(fps) \
                 + " -i '" + inputfiles + "'" \
@@ -254,8 +266,8 @@ class Timelapse:
             self.notify_timelapse_event(result)
 
             # run the command
-            shell_command = self.server.lookup_component("shell_command")
-            scmd = shell_command.build_shell_command(cmd, self.ffmpeg_cb)
+            shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
+            scmd = shell_cmd.build_shell_command(cmd, self.ffmpeg_cb)
             try:
                 cmdstatus = await scmd.run(timeout=None,
                                            verbose=True,
@@ -293,7 +305,7 @@ class Timelapse:
 
         return result
 
-    def ffmpeg_cb(self, response):
+    def ffmpeg_cb(self, response: str) -> None:
         # logging.debug(f"ffmpeg_cb: {response}")
         lastcmdreponse = response.decode("utf-8")
         try:
@@ -316,10 +328,10 @@ class Timelapse:
             }
             self.notify_timelapse_event(result)
 
-    def notify_timelapse_event(self, result):
+    def notify_timelapse_event(self, result: str) -> None:
         logging.debug(f"notify_timelapse_event: {result}")
         self.server.send_event("timelapse:timelapse_event", result)
 
 
-def load_component(config):
+def load_component(config: ConfigHelper) -> Timelapse:
     return Timelapse(config)
