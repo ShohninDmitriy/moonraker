@@ -265,9 +265,9 @@ class Timelapse:
                 'status': 'started',
                 'framecount': str(self.framecount),
                 'settings': {
-                   'framerate': self.framerate,
-                   'crf': self.crf,
-                   'pixelformat': self.pixelformat
+                    'framerate': self.framerate,
+                    'crf': self.crf,
+                    'pixelformat': self.pixelformat
                 }
             })
 
