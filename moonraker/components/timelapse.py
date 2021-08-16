@@ -264,6 +264,11 @@ class Timelapse:
             result.update({
                 'status': 'started',
                 'framecount': str(self.framecount),
+                'settings': {
+                   'framerate': self.framerate,
+                   'crf': self.crf,
+                   'pixelformat': self.pixelformat
+                }
             })
 
             # run the command
@@ -345,7 +350,7 @@ class Timelapse:
 
     def notify_timelapse_event(self, result: Dict[str, Any]) -> None:
         logging.debug(f"notify_timelapse_event: {result}")
-        self.server.send_event("timelapse:timelapse_event", result)
+        self.server.send_event("timelapse:timelapse_event", str(result))
 
 
 def load_component(config: ConfigHelper) -> Timelapse:
