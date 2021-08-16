@@ -158,7 +158,7 @@ class Timelapse:
             logging.debug(f"cmd: {cmd}")
 
             shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
-            scmd = self.shell_cmd.build_shell_command(cmd, None)
+            scmd = shell_cmd.build_shell_command(cmd, None)
             try:
                 cmdstatus = await scmd.run(timeout=2., verbose=False)
             except Exception:
@@ -167,7 +167,7 @@ class Timelapse:
             result = {'action': 'newframe'}
             if cmdstatus:
                 result.update({
-                    'frame': self.framecount,
+                    'frame': str(self.framecount),
                     'framefile': framefile,
                     'status': 'success'
                 })
@@ -207,7 +207,7 @@ class Timelapse:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
 
-    async def timelapse_render(self, webrequest=None) -> Dict[str, str]:
+    async def timelapse_render(self, webrequest=None) -> Dict[str, Any]:
         filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
         self.framecount = len(filelist)
         result = {'action': 'render'}
@@ -263,7 +263,7 @@ class Timelapse:
             logging.debug(f"start FFMPEG: {cmd}")
             result.update({
                 'status': 'started',
-                'framecount': self.framecount,
+                'framecount': str(self.framecount),
                 'settings': {
                     'framerate': self.framerate,
                     'crf': self.crf,
@@ -274,7 +274,7 @@ class Timelapse:
             # run the command
             shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
             self.notify_timelapse_event(result)
-            scmd = self.shell_cmd.build_shell_command(cmd, self.ffmpeg_cb)
+            scmd = shell_cmd.build_shell_command(cmd, self.ffmpeg_cb)
             try:
                 cmdstatus = await scmd.run(verbose=True,
                                            log_complete=False
