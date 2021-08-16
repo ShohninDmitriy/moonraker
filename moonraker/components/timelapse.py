@@ -50,6 +50,7 @@ class Timelapse:
         temp_dir_cfg = config.get("frame_path", "/tmp/timelapse/")
         self.ffmpeg_binary_path = config.get(
             "ffmpeg_binary_path", "/usr/bin/ffmpeg")
+        self.previewImage = config.getboolean("previewImage", True)
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -291,6 +292,20 @@ class Timelapse:
                 })
                 result.pop("framecount")
                 result.pop("settings")
+
+                # copy image preview
+                if self.previewImage:
+                    previewfile = f"timelapse_{gcodefile}_{date_time}.jpg"
+                    previewSrc = filelist[-1:][0]
+                    # logging.debug(f"deadbeef lastframe: {previewSrc}")
+                    try:
+                        shutil.copy(previewSrc, self.out_dir + previewfile)
+                    except OSError as err:
+                        logging.info(f"copying preview image failed: {err}")
+                    else:
+                        result.update({
+                            'previewImage': previewfile
+                        })
             else:
                 status = "error"
                 msg = f"Rendering Video failed"
