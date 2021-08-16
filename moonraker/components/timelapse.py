@@ -264,11 +264,6 @@ class Timelapse:
             result.update({
                 'status': 'started',
                 'framecount': str(self.framecount),
-                # 'settings': {
-                    # 'framerate': self.framerate,
-                    # 'crf': self.crf,
-                    # 'pixelformat': self.pixelformat
-                # }
             })
 
             # run the command
