@@ -268,8 +268,7 @@ class Timelapse:
                     'pixelformat': self.pixelformat
                 }
             })
-            
-            
+
             # run the command
             shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
             self.notify_timelapse_event(result)
