@@ -11,6 +11,7 @@ import re
 import shutil
 from datetime import datetime
 from tornado.ioloop import IOLoop
+from zipfile import ZipFile
 
 # Annotation imports
 from typing import (
@@ -30,6 +31,7 @@ class Timelapse:
     def __init__(self, config: ConfigHelper) -> None:
         # setup vars
         self.renderisrunning = False
+        self.saveisrunning = False
         self.takingframe = False
         self.framecount = 0
         self.lastframefile = ""
@@ -53,6 +55,7 @@ class Timelapse:
         self.ffmpeg_binary_path = config.get(
             "ffmpeg_binary_path", "/usr/bin/ffmpeg")
         self.previewImage = config.getboolean("previewImage", True)
+        self.preserveFrames = config.getboolean("preserveFrames", False)
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -82,6 +85,8 @@ class Timelapse:
             "server:gcode_response", self.handle_status_update)
         self.server.register_remote_method(
             "timelapse_newframe", self.call_timelapse_newframe)
+        self.server.register_remote_method(
+            "timelapse_saveFrames", self.call_timelapse_saveFrames)
         self.server.register_remote_method(
             "timelapse_render", self.call_timelapse_render)
         self.server.register_endpoint(
@@ -190,6 +195,9 @@ class Timelapse:
             self.timelapse_cleanup()
         elif status == "Done printing file":
             # print_done
+            if self.enabled and self.preserveFrames:
+                ioloop = IOLoop.current()
+                ioloop.spawn_callback(self.timelapse_saveFrames)
             if self.enabled and self.autorender:
                 ioloop = IOLoop.current()
                 ioloop.spawn_callback(self.timelapse_render)
@@ -203,6 +211,43 @@ class Timelapse:
         self.framecount = 0
         self.lastframefile = ""
 
+    def call_timelapse_saveFrames(self) -> None:
+        ioloop = IOLoop.current()
+        ioloop.spawn_callback(self.timelapse_saveFrames)
+
+    async def timelapse_saveFrames(self) -> None:
+        filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
+        self.framecount = len(filelist)
+
+        if not filelist:
+            msg = "no frames to save, skip"
+            status = "skipped"
+        elif self.saveisrunning:
+            msg = "saving frames already"
+            status = "running"
+        else:
+            self.saveisrunning = True
+
+            # get printed filename
+            klippy_apis = self.server.lookup_component("klippy_apis")
+            kresult = await klippy_apis.query_objects({'print_stats': None})
+            pstats = kresult.get("print_stats", {})
+            gcodefile = pstats.get("filename", "").split("/")[-1]
+
+            # prepare output filename
+            now = datetime.now()
+            date_time = now.strftime(self.timeformatcode)
+            outfile = f"timelapse_{gcodefile}_{date_time}"
+
+            zipObj = ZipFile(self.out_dir + outfile + "_frames.zip", "w")
+
+            for frame in filelist:
+                zipObj.write(frame)
+
+            logging.info(f"saved frames: {outfile}_frames.zip")
+
+            self.saveisrunning = False
+
     def call_timelapse_render(self) -> None:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
@@ -215,15 +260,13 @@ class Timelapse:
         if not filelist:
             msg = "no frames to render, skip"
             status = "skipped"
-            cmd = outfile = None
         elif self.renderisrunning:
             msg = "render is already running"
             status = "running"
-            cmd = outfile = None
         elif not self.ffmpeg_installed:
             msg = f"{self.ffmpeg_binary_path} not found, please install ffmpeg"
             status = "error"
-            cmd = outfile = None
+            # cmd = outfile = None
             logging.info(f"timelapse: {msg}")
         else:
             self.renderisrunning = True
@@ -234,18 +277,18 @@ class Timelapse:
             pstats = kresult.get("print_stats", {})
             gcodefile = pstats.get("filename", "").split("/")[-1]
 
+            # prepare output filename
+            now = datetime.now()
+            date_time = now.strftime(self.timeformatcode)
+            inputfiles = self.temp_dir + "frame%6d.jpg"
+            outfile = f"timelapse_{gcodefile}_{date_time}"
+
             # variable framerate
             if self.variablefps:
                 fps = int(self.framecount / self.targetlength)
                 fps = max(min(fps, self.framerate), self.min_framerate)
             else:
                 fps = self.framerate
-
-            # prepare output filenames
-            now = datetime.now()
-            date_time = now.strftime(self.timeformatcode)
-            inputfiles = self.temp_dir + "frame%6d.jpg"
-            outfile = f"timelapse_{gcodefile}_{date_time}.mp4"
 
             # build shell command
             cmd = self.ffmpeg_binary_path \
@@ -257,7 +300,7 @@ class Timelapse:
                 + " -pix_fmt " + self.pixelformat \
                 + " -an" \
                 + " " + self.extraoutputparams \
-                + " '" + self.out_dir + outfile + "' -y"
+                + " '" + self.out_dir + outfile + ".mp4' -y"
 
             # log and notify ws
             logging.debug(f"start FFMPEG: {cmd}")
@@ -277,7 +320,8 @@ class Timelapse:
             scmd = shell_cmd.build_shell_command(cmd, self.ffmpeg_cb)
             try:
                 cmdstatus = await scmd.run(verbose=True,
-                                           log_complete=False
+                                           log_complete=False,
+                                           timeout=9999999999,
                                            )
             except Exception:
                 logging.exception(f"Error running cmd '{cmd}'")
@@ -295,7 +339,7 @@ class Timelapse:
 
                 # copy image preview
                 if self.previewImage:
-                    previewfile = f"timelapse_{gcodefile}_{date_time}.jpg"
+                    previewfile = f"{outfile}.jpg"
                     previewSrc = filelist[-1:][0]
                     # logging.debug(f"deadbeef lastframe: {previewSrc}")
                     try:
@@ -350,7 +394,7 @@ class Timelapse:
 
     def notify_timelapse_event(self, result: Dict[str, Any]) -> None:
         logging.debug(f"notify_timelapse_event: {result}")
-        self.server.send_event("timelapse:timelapse_event", str(result))
+        self.server.send_event("timelapse:timelapse_event", result)
 
 
 def load_component(config: ConfigHelper) -> Timelapse:
