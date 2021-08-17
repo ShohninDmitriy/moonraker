@@ -242,7 +242,7 @@ class Timelapse:
             zipObj = ZipFile(self.out_dir + outfile + "_frames.zip", "w")
 
             for frame in filelist:
-                zipObj.write(frame)
+                zipObj.write(frame, frame.split("/")[-1])
 
             logging.info(f"saved frames: {outfile}_frames.zip")
 
@@ -329,9 +329,9 @@ class Timelapse:
             # check success
             if cmdstatus:
                 status = "success"
-                msg = f"Rendering Video successful: {outfile}"
+                msg = f"Rendering Video successful: {outfile}.mp4"
                 result.update({
-                    'filename': outfile,
+                    'filename': f"{outfile}.mp4",
                     'printfile': gcodefile
                 })
                 result.pop("framecount")
