@@ -252,7 +252,7 @@ class Timelapse:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
 
-    async def timelapse_render(self, webrequest=None) -> Dict[str, Any]:
+    async def timelapse_render(self, webrequest=None:
         filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
         self.framecount = len(filelist)
         result = {'action': 'render'}
@@ -369,7 +369,7 @@ class Timelapse:
 
         return result
 
-    def ffmpeg_cb(self, response: bytes) -> None:
+    def ffmpeg_cb(self, response):
         # logging.debug(f"ffmpeg_cb: {response}")
         lastcmdreponse = response.decode("utf-8")
         try:
