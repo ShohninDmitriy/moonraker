@@ -252,7 +252,7 @@ class Timelapse:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.timelapse_render)
 
-    async def timelapse_render(self, webrequest=None:
+    async def timelapse_render(self, webrequest=None):
         filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
         self.framecount = len(filelist)
         result = {'action': 'render'}
