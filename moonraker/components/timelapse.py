@@ -36,6 +36,7 @@ class Timelapse:
         self.framecount = 0
         self.lastframefile = ""
         self.lastrenderprogress = 0
+        self.lastcmdreponse = ""
 
         # get config
         self.enabled = config.getboolean("enabled", True)
@@ -366,7 +367,8 @@ class Timelapse:
                 status = "error"
                 msg = f"Rendering Video failed"
                 result.update({
-                    'cmd': cmd
+                    'cmd': cmd,
+                    'cmdresponse': self.lastcmdreponse
                 })
 
             self.renderisrunning = False
@@ -383,10 +385,10 @@ class Timelapse:
 
     def ffmpeg_cb(self, response):
         # logging.debug(f"ffmpeg_cb: {response}")
-        lastcmdreponse = response.decode("utf-8")
+        self.lastcmdreponse = response.decode("utf-8")
         try:
             frame = re.search(
-                r'(?<=frame=)*(\d+)(?=.+fps)', lastcmdreponse
+                r'(?<=frame=)*(\d+)(?=.+fps)', self.lastcmdreponse
             ).group()
         except AttributeError:
             return
