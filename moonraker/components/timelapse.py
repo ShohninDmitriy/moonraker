@@ -56,6 +56,7 @@ class Timelapse:
             "ffmpeg_binary_path", "/usr/bin/ffmpeg")
         self.previewImage = config.getboolean("previewImage", True)
         self.preserveFrames = config.getboolean("preserveFrames", False)
+        self.rotation = config.getint("rotation", 0)
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -133,6 +134,8 @@ class Timelapse:
                     self.targetlength = webrequest.get_int(arg)
                 if arg == "min_framerate":
                     self.min_framerate = webrequest.get_int(arg)
+                if arg == "rotation":
+                    self.rotation = webrequest.get_int(arg)
         return {
             'enabled': self.enabled,
             'autorender': self.autorender,
@@ -142,7 +145,8 @@ class Timelapse:
             'extraoutputparams': self.extraoutputparams,
             'variablefps': self.variablefps,
             'targetlength': self.targetlength,
-            'min_framerate': self.min_framerate
+            'min_framerate': self.min_framerate,
+            'rotation': self.rotation
         }
 
     def call_timelapse_newframe(self) -> None:
@@ -289,11 +293,19 @@ class Timelapse:
                 fps = max(min(fps, self.framerate), self.min_framerate)
             else:
                 fps = self.framerate
+            
+            # apply rotation
+            rotationParam = ""
+            if self.rotation > 0:
+                pi = 3.141592653589793
+                rot = str(self.rotation*(pi/180))
+                rotationParam = " -vf rotate=" + rot
 
             # build shell command
             cmd = self.ffmpeg_binary_path \
                 + " -r " + str(fps) \
                 + " -i '" + inputfiles + "'" \
+                + rotationParam \
                 + " -threads 2 -g 5" \
                 + " -crf " + str(self.crf) \
                 + " -vcodec libx264" \
