@@ -58,6 +58,7 @@ class Timelapse:
         self.previewImage = config.getboolean("previewImage", True)
         self.preserveFrames = config.getboolean("preserveFrames", False)
         self.rotation = config.getint("rotation", 0)
+        self.dublicatelastframe = config.getint("dublicatelastframe", 0)
 
         # check if ffmpeg is installed
         self.ffmpeg_installed = os.path.isfile(self.ffmpeg_binary_path)
@@ -137,6 +138,8 @@ class Timelapse:
                     self.min_framerate = webrequest.get_int(arg)
                 if arg == "rotation":
                     self.rotation = webrequest.get_int(arg)
+                if arg == "dublicatelastframe":
+                    self.dublicatelastframe = webrequest.get_int(arg)
         return {
             'enabled': self.enabled,
             'autorender': self.autorender,
@@ -147,7 +150,8 @@ class Timelapse:
             'variablefps': self.variablefps,
             'targetlength': self.targetlength,
             'min_framerate': self.min_framerate,
-            'rotation': self.rotation
+            'rotation': self.rotation,
+            'dublicatelastframe': self.dublicatelastframe
         }
 
     def call_timelapse_newframe(self) -> None:
@@ -288,13 +292,35 @@ class Timelapse:
             inputfiles = self.temp_dir + "frame%6d.jpg"
             outfile = f"timelapse_{gcodefile}_{date_time}"
 
+            # dublicate last frame
+            if self.dublicatelastframe > 0:
+                lastframe = filelist[-1:][0]
+                duplicates = []
+                logging.debug(f"deadbeef lastframe: {lastframe}")
+
+                for i in range(self.dublicatelastframe):
+                    nextframe = str(self.framecount + i + 1).zfill(6)
+                    duplicate = "frame" + nextframe + ".jpg"
+                    duplicatePath = self.temp_dir + duplicate
+                    duplicates.append(duplicatePath)
+                    # logging.debug(f"deadbeef duplicatePath: {duplicatePath}")
+                    try:
+                        shutil.copy(lastframe, duplicatePath)
+                    except OSError as err:
+                        logging.info(f"duplicating last frame failed: {err}")
+
+                # update Filelist
+                filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
+                self.framecount = len(filelist)
+                # logging.debug(f"deadbeef updated filelist: {filelist}")
+
             # variable framerate
             if self.variablefps:
                 fps = int(self.framecount / self.targetlength)
                 fps = max(min(fps, self.framerate), self.min_framerate)
             else:
                 fps = self.framerate
-            
+
             # apply rotation
             rotationParam = ""
             if self.rotation > 0:
@@ -347,7 +373,7 @@ class Timelapse:
                     'filename': f"{outfile}.mp4",
                     'printfile': gcodefile
                 })
-                result.pop("framecount")
+                # result.pop("framecount")
                 result.pop("settings")
 
                 # copy image preview
@@ -372,6 +398,15 @@ class Timelapse:
                 })
 
             self.renderisrunning = False
+
+            # cleanup duplicates
+            if duplicates:
+                for dupe in duplicates:
+                    # logging.debug(f"deadbeef removed dupelicate: {dupe}")
+                    try:
+                        os.remove(dupe)
+                    except OSError as err:
+                        logging.info(f"remove duplicate failed: {err}")
 
         # log and notify ws
         logging.info(msg)
