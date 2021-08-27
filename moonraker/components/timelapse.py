@@ -37,6 +37,7 @@ class Timelapse:
         self.lastframefile = ""
         self.lastrenderprogress = 0
         self.lastcmdreponse = ""
+        self.autorenderOnce = False
 
         # get config
         self.enabled = config.getboolean("enabled", True)
@@ -122,6 +123,8 @@ class Timelapse:
                     self.enabled = webrequest.get_boolean(arg)
                 if arg == "autorender" and self.ffmpeg_installed:
                     self.autorender = webrequest.get_boolean(arg)
+                if arg == "autorenderOnce" and self.ffmpeg_installed:
+                    self.autorenderOnce = webrequest.get_boolean(arg)
                 if arg == "constant_rate_factor":
                     self.crf = webrequest.get_int(arg)
                 if arg == "output_framerate":
@@ -143,6 +146,7 @@ class Timelapse:
         return {
             'enabled': self.enabled,
             'autorender': self.autorender,
+            'autorenderOnce': self.autorenderOnce,
             'constant_rate_factor': self.crf,
             'output_framerate': self.framerate,
             'pixelformat': self.pixelformat,
@@ -204,12 +208,14 @@ class Timelapse:
             self.timelapse_cleanup()
         elif status == "Done printing file":
             # print_done
-            if self.enabled and self.preserveFrames:
-                ioloop = IOLoop.current()
-                ioloop.spawn_callback(self.timelapse_saveFrames)
-            if self.enabled and self.autorender:
-                ioloop = IOLoop.current()
-                ioloop.spawn_callback(self.timelapse_render)
+            if self.enabled:
+                if self.preserveFrames:
+                    ioloop = IOLoop.current()
+                    ioloop.spawn_callback(self.timelapse_saveFrames)
+                if self.autorender or self.autorenderOnce:
+                    self.autorenderOnce = False
+                    ioloop = IOLoop.current()
+                    ioloop.spawn_callback(self.timelapse_render)
 
     def timelapse_cleanup(self) -> None:
         logging.debug("timelapse_cleanup")
