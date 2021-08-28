@@ -572,7 +572,7 @@ Add the macro to your printer.cfg
 ```ini
 # printer.cfg
 
-[gcode_macro TIMELAPSE_NEW_FRAME]
+[gcode_macro _TIMELAPSE_NEW_FRAME]
 gcode:
  {action_call_remote_method("timelapse_newframe")}
  ; leave this in a separate macro!
@@ -582,7 +582,7 @@ gcode:
   ;SAVE_GCODE_STATE NAME=SNAPSHOT
   ;M117 move your head/bed here, do retracts and so on
   ;G4 P500 ;dwell
-  TIMELAPSE_NEW_FRAME
+  _TIMELAPSE_NEW_FRAME
   ;G4 P500 ;moar dwelling
   ;M117 don't forget to un-retract!
   ;RESTORE_GCODE_STATE NAME=SNAPSHOT
@@ -617,25 +617,25 @@ a timebased timelapse more add following to your printer.cfg:
 
 [delayed_gcode HYPERLAPSE_LOOP]
 gcode:
-  HYPERLAPSE
+  _HYPERLAPSE
 
-[gcode_macro HYPERLAPSE]
+[gcode_macro _HYPERLAPSE]
 variable_cycle: 0
 gcode:
   {% if cycle > 0 %}
-    TIMELAPSE_NEW_FRAME
-    UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION={printer["gcode_macro HYPERLAPSE"].cycle}
+    _TIMELAPSE_NEW_FRAME
+    UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION={printer["gcode_macro _HYPERLAPSE"].cycle}
   {% endif %}
 
 [gcode_macro HYPERLAPSE_START]
 variable_defaultcycle: 30  # edit the "cycle" time here (in seconds)
 gcode:
   {% if params.VALUE is defined %}
-    SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=cycle VALUE={params.VALUE}
+    SET_GCODE_VARIABLE MACRO=_HYPERLAPSE VARIABLE=cycle VALUE={params.VALUE}
   {% else %}
-    SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=cycle VALUE={printer["gcode_macro HYPERLAPSE_START"].defaultcycle}
+    SET_GCODE_VARIABLE MACRO=_HYPERLAPSE VARIABLE=cycle VALUE={printer["gcode_macro HYPERLAPSE_START"].defaultcycle}
   {% endif %}
-  HYPERLAPSE
+  _HYPERLAPSE
   
 [gcode_macro HYPERLAPSE_STOP]
 gcode:
