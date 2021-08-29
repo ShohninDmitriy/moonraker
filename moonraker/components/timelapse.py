@@ -299,9 +299,9 @@ class Timelapse:
             outfile = f"timelapse_{gcodefile}_{date_time}"
 
             # dublicate last frame
+            duplicates = []
             if self.dublicatelastframe > 0:
                 lastframe = filelist[-1:][0]
-                duplicates = []
                 logging.debug(f"deadbeef lastframe: {lastframe}")
 
                 for i in range(self.dublicatelastframe):
