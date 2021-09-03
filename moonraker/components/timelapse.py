@@ -247,12 +247,12 @@ class Timelapse:
             klippy_apis = self.server.lookup_component("klippy_apis")
             kresult = await klippy_apis.query_objects({'print_stats': None})
             pstats = kresult.get("print_stats", {})
-            gcodefile = pstats.get("filename", "").split("/")[-1]
+            gcodefilename = pstats.get("filename", "").split("/")[-1]
 
             # prepare output filename
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
-            outfile = f"timelapse_{gcodefile}_{date_time}"
+            outfile = f"timelapse_{gcodefilename}_{date_time}"
 
             zipObj = ZipFile(self.out_dir + outfile + "_frames.zip", "w")
 
@@ -290,13 +290,13 @@ class Timelapse:
             klippy_apis = self.server.lookup_component("klippy_apis")
             kresult = await klippy_apis.query_objects({'print_stats': None})
             pstats = kresult.get("print_stats", {})
-            gcodefile = pstats.get("filename", "").split("/")[-1]
+            gcodefilename = pstats.get("filename", "").split("/")[-1]
 
             # prepare output filename
             now = datetime.now()
             date_time = now.strftime(self.timeformatcode)
             inputfiles = self.temp_dir + "frame%6d.jpg"
-            outfile = f"timelapse_{gcodefile}_{date_time}"
+            outfile = f"timelapse_{gcodefilename}_{date_time}"
 
             # dublicate last frame
             duplicates = []
@@ -345,7 +345,7 @@ class Timelapse:
                 + " -pix_fmt " + self.pixelformat \
                 + " -an" \
                 + " " + self.extraoutputparams \
-                + " '" + self.out_dir + outfile + ".mp4' -y"
+                + " '" + self.temp_dir + outfile + ".mp4' -y" 
 
             # log and notify ws
             logging.debug(f"start FFMPEG: {cmd}")
@@ -377,10 +377,17 @@ class Timelapse:
                 msg = f"Rendering Video successful: {outfile}.mp4"
                 result.update({
                     'filename': f"{outfile}.mp4",
-                    'printfile': gcodefile
+                    'printfile': gcodefilename
                 })
                 # result.pop("framecount")
                 result.pop("settings")
+                
+                # move finished output file to output directory
+                try:
+                    shutil.move(self.temp_dir + outfile + ".mp4",
+                                self.out_dir + outfile + ".mp4")
+                except OSError as err:
+                    logging.info(f"moving output file failed: {err}")
 
                 # copy image preview
                 if self.previewImage:
