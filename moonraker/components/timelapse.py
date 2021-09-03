@@ -345,7 +345,7 @@ class Timelapse:
                 + " -pix_fmt " + self.pixelformat \
                 + " -an" \
                 + " " + self.extraoutputparams \
-                + " '" + self.temp_dir + outfile + ".mp4' -y" 
+                + " '" + self.temp_dir + outfile + ".mp4' -y"
 
             # log and notify ws
             logging.debug(f"start FFMPEG: {cmd}")
@@ -381,7 +381,7 @@ class Timelapse:
                 })
                 # result.pop("framecount")
                 result.pop("settings")
-                
+
                 # move finished output file to output directory
                 try:
                     shutil.move(self.temp_dir + outfile + ".mp4",
