@@ -44,9 +44,10 @@ class Timelapse:
         self.autorender = config.getboolean("autorender", True)
         self.crf = config.getint("constant_rate_factor", 23)
         self.framerate = config.getint("output_framerate", 30)
-        self.variablefps = config.getboolean("variablefps", False)
+        self.variablefps = config.getboolean("variable_fps", False)
         self.targetlength = config.getint("targetlength", 60)
-        self.min_framerate = config.getint("min_framerate", 5)
+        self.min_framerate = config.getint("variable_fps_min", 5)
+        self.max_framerate = config.getint("variable_fps_max", 60)
         self.timeformatcode = config.get("time_format_code", "%Y%m%d_%H%M")
         self.snapshoturl = config.get(
             "snapshoturl", "http://localhost:8080/?action=snapshot")
@@ -133,12 +134,14 @@ class Timelapse:
                     self.pixelformat = webrequest.get(arg)
                 if arg == "extraoutputparams":
                     self.extraoutputparams = webrequest.get(arg)
-                if arg == "variablefps":
+                if arg == "variable_fps":
                     self.variablefps = webrequest.get_boolean(arg)
                 if arg == "targetlength":
                     self.targetlength = webrequest.get_int(arg)
-                if arg == "min_framerate":
+                if arg == "variable_fps_min":
                     self.min_framerate = webrequest.get_int(arg)
+                if arg == "variable_fps_max":
+                    self.max_framerate = webrequest.get_int(arg)
                 if arg == "rotation":
                     self.rotation = webrequest.get_int(arg)
                 if arg == "dublicatelastframe":
@@ -151,9 +154,10 @@ class Timelapse:
             'output_framerate': self.framerate,
             'pixelformat': self.pixelformat,
             'extraoutputparams': self.extraoutputparams,
-            'variablefps': self.variablefps,
+            'variable_fps': self.variablefps,
             'targetlength': self.targetlength,
-            'min_framerate': self.min_framerate,
+            'variable_fps_min': self.min_framerate,
+            'variable_fps_max': self.max_framerate,
             'rotation': self.rotation,
             'dublicatelastframe': self.dublicatelastframe
         }
@@ -323,7 +327,7 @@ class Timelapse:
             # variable framerate
             if self.variablefps:
                 fps = int(self.framecount / self.targetlength)
-                fps = max(min(fps, self.framerate), self.min_framerate)
+                fps = max(min(fps, self.max_framerate), self.min_framerate)
             else:
                 fps = self.framerate
 
@@ -353,7 +357,7 @@ class Timelapse:
                 'status': 'started',
                 'framecount': str(self.framecount),
                 'settings': {
-                    'framerate': self.framerate,
+                    'framerate': fps,
                     'crf': self.crf,
                     'pixelformat': self.pixelformat
                 }
