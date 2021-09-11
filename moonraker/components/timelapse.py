@@ -146,6 +146,10 @@ class Timelapse:
                     self.rotation = webrequest.get_int(arg)
                 if arg == "dublicatelastframe":
                     self.dublicatelastframe = webrequest.get_int(arg)
+                if arg == "previewImage":
+                    self.previewImage = webrequest.get_boolean(arg)
+                if arg == "preserveFrames":
+                    self.preserveFrames = webrequest.get_boolean(arg)
         return {
             'enabled': self.enabled,
             'autorender': self.autorender,
@@ -159,7 +163,9 @@ class Timelapse:
             'variable_fps_min': self.min_framerate,
             'variable_fps_max': self.max_framerate,
             'rotation': self.rotation,
-            'dublicatelastframe': self.dublicatelastframe
+            'dublicatelastframe': self.dublicatelastframe,
+            'previewImage': self.previewImage,
+            'preserveFrames': self.preserveFrames
         }
 
     def call_timelapse_newframe(self) -> None:
