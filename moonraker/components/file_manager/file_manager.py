@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     _T = TypeVar("_T")
 
 VALID_GCODE_EXTS = ['.gcode', '.g', '.gco', '.ufp', '.nc']
-FULL_ACCESS_ROOTS = ["gcodes", "config"]
 METADATA_SCRIPT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "metadata.py"))
 WATCH_FLAGS = iFlags.CREATE | iFlags.DELETE | iFlags.MODIFY \
@@ -55,6 +54,7 @@ class FileManager:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
         self.event_loop = self.server.get_event_loop()
+        self.full_access_roots: Set[str] = set()
         self.file_paths: Dict[str, str] = {}
         db: DBComp = self.server.load_component(config, "database")
         gc_path: str = db.get_item(
@@ -93,7 +93,8 @@ class FileManager:
         # Register Klippy Configuration Path
         config_path = config.get('config_path', None)
         if config_path is not None:
-            ret = self.register_directory('config', config_path)
+            ret = self.register_directory('config', config_path,
+                                          full_access=True)
             if not ret:
                 raise config.error(
                     "Option 'config_path' is not a valid directory")
@@ -108,7 +109,7 @@ class FileManager:
 
         # If gcode path is in the database, register it
         if gc_path:
-            self.register_directory('gcodes', gc_path)
+            self.register_directory('gcodes', gc_path, full_access=True)
 
     def _update_fixed_paths(self) -> None:
         kinfo = self.server.get_klippy_info()
@@ -138,7 +139,11 @@ class FileManager:
             self.server.register_static_file_handler(
                 "klippy.log", log_path, force=True)
 
-    def register_directory(self, root: str, path: Optional[str]) -> bool:
+    def register_directory(self,
+                           root: str,
+                           path: Optional[str],
+                           full_access: bool = False
+                           ) -> bool:
         if path is None:
             return False
         path = os.path.abspath(os.path.expanduser(path))
@@ -150,8 +155,9 @@ class FileManager:
                 "that the path exists and is not the file system root.")
             return False
         permissions = os.R_OK
-        if root in FULL_ACCESS_ROOTS:
+        if full_access:
             permissions |= os.W_OK
+            self.full_access_roots.add(root)
         if not os.access(path, permissions):
             logging.info(
                 f"\nMoonraker does not have permission to access path "
@@ -166,7 +172,7 @@ class FileManager:
                 moon_db["file_manager.gcode_path"] = path
                 # scan for metadata changes
                 self.gcode_metadata.update_gcode_path(path)
-            if root in FULL_ACCESS_ROOTS:
+            if full_access:
                 # Refresh the file list and add watches
                 self.inotify_handler.add_root_watch(root, path)
             else:
@@ -229,19 +235,19 @@ class FileManager:
         if action == 'GET':
             is_extended = web_request.get_boolean('extended', False)
             # Get list of files and subdirectories for this target
-            dir_info = self._list_directory(dir_path, is_extended)
+            dir_info = self._list_directory(dir_path, root, is_extended)
             return dir_info
         async with self.write_mutex:
             result = {
                 'item': {'path': directory, 'root': root},
                 'action': "create_dir"}
-            if action == 'POST' and root in FULL_ACCESS_ROOTS:
+            if action == 'POST' and root in self.full_access_roots:
                 # Create a new directory
                 try:
                     os.mkdir(dir_path)
                 except Exception as e:
                     raise self.server.error(str(e))
-            elif action == 'DELETE' and root in FULL_ACCESS_ROOTS:
+            elif action == 'DELETE' and root in self.full_access_roots:
                 # Remove a directory
                 result['action'] = "delete_dir"
                 if directory.strip("/") == root:
@@ -322,7 +328,7 @@ class FileManager:
         ep = web_request.get_endpoint()
         source_root, source_path = self._convert_request_path(source)
         dest_root, dest_path = self._convert_request_path(destination)
-        if dest_root not in FULL_ACCESS_ROOTS:
+        if dest_root not in self.full_access_roots:
             raise self.server.error(
                 f"Destination path is read-only: {dest_root}")
         async with self.write_mutex:
@@ -333,7 +339,7 @@ class FileManager:
             if os.path.exists(dest_path):
                 await self._handle_operation_check(dest_path)
             if ep == "/server/files/move":
-                if source_root not in FULL_ACCESS_ROOTS:
+                if source_root not in self.full_access_roots:
                     raise self.server.error(
                         f"Source path is read-only, cannot move: {source_root}")
                 # if moving the file, make sure the source is not in use
@@ -368,6 +374,7 @@ class FileManager:
 
     def _list_directory(self,
                         path: str,
+                        root: str,
                         is_extended: bool = False
                         ) -> Dict[str, Any]:
         if not os.path.isdir(path):
@@ -378,7 +385,7 @@ class FileManager:
             full_path = os.path.join(path, fname)
             if not os.path.exists(full_path):
                 continue
-            path_info = self.get_path_info(full_path)
+            path_info = self.get_path_info(full_path, root)
             if os.path.isdir(full_path):
                 path_info['dirname'] = fname
                 flist['dirs'].append(path_info)
@@ -398,11 +405,21 @@ class FileManager:
         flist['disk_usage'] = usage._asdict()
         return flist
 
-    def get_path_info(self, path: str) -> Dict[str, Any]:
-        modified = os.path.getmtime(path)
-        size = os.path.getsize(path)
-        path_info = {'modified': modified, 'size': size}
-        return path_info
+    def get_path_info(self, path: str, root: str) -> Dict[str, Any]:
+        fstat = os.stat(path)
+        real_path = os.path.realpath(path)
+        permissions = "rw"
+        if (
+            (os.path.islink(path) and os.path.isfile(real_path)) or
+            not os.access(real_path, os.R_OK | os.W_OK) or
+            root not in self.full_access_roots
+        ):
+            permissions = "r"
+        return {
+            'modified': fstat.st_mtime,
+            'size': fstat.st_size,
+            'permissions': permissions
+        }
 
     def gen_temp_upload_path(self) -> str:
         loop_time = int(self.event_loop.get_loop_time())
@@ -420,7 +437,7 @@ class FileManager:
                 root = upload_info['root']
                 if root == "gcodes" and upload_info['ext'] in VALID_GCODE_EXTS:
                     result = await self._finish_gcode_upload(upload_info)
-                elif root in FULL_ACCESS_ROOTS:
+                elif root in self.full_access_roots:
                     result = await self._finish_standard_upload(upload_info)
                 else:
                     raise self.server.error(f"Invalid root request: {root}")
@@ -463,6 +480,10 @@ class FileManager:
         if unzip_ufp:
             filename = os.path.splitext(filename)[0] + ".gcode"
             dest_path = os.path.splitext(dest_path)[0] + ".gcode"
+        if os.path.islink(dest_path):
+            raise self.server.error(f"Cannot overwrite symlink: {dest_path}")
+        if os.path.isfile(dest_path) and not os.access(dest_path, os.W_OK):
+            raise self.server.error(f"File is read-only: {dest_path}")
         return {
             'root': root,
             'filename': filename,
@@ -549,12 +570,13 @@ class FileManager:
                     await asyncio.sleep(.1)
             if upload_info['unzip_ufp']:
                 tmp_path = upload_info['tmp_file_path']
-                finfo = self.get_path_info(tmp_path)
+                finfo = self.get_path_info(tmp_path, upload_info['root'])
                 finfo['ufp_path'] = tmp_path
             else:
                 shutil.move(upload_info['tmp_file_path'],
                             upload_info['dest_path'])
-                finfo = self.get_path_info(upload_info['dest_path'])
+                finfo = self.get_path_info(upload_info['dest_path'],
+                                           upload_info['root'])
         except Exception:
             logging.exception("Upload Write Error")
             raise self.server.error("Unable to save file", 500)
@@ -596,7 +618,7 @@ class FileManager:
                 if not os.path.exists(full_path):
                     continue
                 fname = full_path[len(path) + 1:]
-                finfo = self.get_path_info(full_path)
+                finfo = self.get_path_info(full_path, root)
                 filelist[fname] = finfo
         if list_format:
             flist: List[Dict[str, Any]] = []
@@ -638,7 +660,7 @@ class FileManager:
         if not os.path.isdir(dir_path):
             raise self.server.error(
                 f"Directory does not exist ({dir_path})")
-        flist = self._list_directory(dir_path)
+        flist = self._list_directory(dir_path, root)
         if simple_format:
             simple_list = []
             for dirobj in flist['dirs']:
@@ -665,7 +687,10 @@ class FileManager:
                     f"Path not available for DELETE: {path}", 405)
             root = parts[0]
             filename = parts[1]
-            if root not in self.file_paths or root not in FULL_ACCESS_ROOTS:
+            if (
+                root not in self.file_paths or
+                root not in self.full_access_roots
+            ):
                 raise self.server.error(
                     f"Path not available for DELETE: {path}", 405)
             root_path = self.file_paths[root]
@@ -1015,8 +1040,6 @@ class INotifyHandler:
 
 
     def add_root_watch(self, root: str, root_path: str) -> None:
-        if root not in FULL_ACCESS_ROOTS:
-            return
         # remove all exisiting watches on root
         if root in self.watched_roots:
             old_root = self.watched_roots.pop(root)
@@ -1114,7 +1137,7 @@ class INotifyHandler:
     def parse_gcode_metadata(self, file_path: str) -> asyncio.Event:
         rel_path = self.file_manager.get_relative_path("gcodes", file_path)
         try:
-            path_info = self.file_manager.get_path_info(file_path)
+            path_info = self.file_manager.get_path_info(file_path, "gcodes")
         except Exception:
             logging.exception(
                 f"Error retreiving path info for file {file_path}")
@@ -1226,10 +1249,14 @@ class INotifyHandler:
         ext: str = os.path.splitext(evt.name)[-1].lower()
         root = node.get_root()
         node_path = node.get_path()
+        file_path = os.path.join(node_path, evt.name)
         if evt.mask & iFlags.CREATE:
             logging.debug(f"Inotify file create: {root}, "
                           f"{node_path}, {evt.name}")
             node.schedule_file_event(evt.name, "create_file")
+            if os.path.islink(file_path):
+                logging.debug(f"Inotify symlink create: {file_path}")
+                await node.complete_file_write(evt.name)
         elif evt.mask & iFlags.DELETE:
             logging.debug(f"Inotify file delete: {root}, "
                           f"{node_path}, {evt.name}")
@@ -1244,7 +1271,6 @@ class INotifyHandler:
         elif evt.mask & iFlags.MOVED_TO:
             logging.debug(f"Inotify file move to: {root}, "
                           f"{node_path}, {evt.name}")
-            file_path = os.path.join(node_path, evt.name)
             moved_evt = self.pending_moves.pop(evt.cookie, None)
             if moved_evt is not None:
                 # Moved from a currently watched directory
@@ -1270,7 +1296,6 @@ class INotifyHandler:
         elif evt.mask & iFlags.MODIFY:
             node.schedule_file_event(evt.name, "modify_file")
         elif evt.mask & iFlags.CLOSE_WRITE:
-            file_path = os.path.join(node_path, evt.name)
             logging.debug(f"Inotify writable file closed: {file_path}")
             # Only process files that have been created or modified
             await node.complete_file_write(evt.name)
@@ -1287,7 +1312,7 @@ class INotifyHandler:
         is_valid = True
         if os.path.exists(full_path):
             try:
-                file_info = self.file_manager.get_path_info(full_path)
+                file_info = self.file_manager.get_path_info(full_path, root)
             except Exception:
                 is_valid = False
         elif action not in ["delete_file", "delete_dir"]:
