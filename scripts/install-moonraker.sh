@@ -9,18 +9,6 @@ FORCE_DEFAULTS="n"
 CONFIG_PATH="${HOME}/moonraker.conf"
 LOG_PATH="/tmp/moonraker.log"
 
-# Step 1:  Verify Klipper has been installed
-check_klipper()
-{
-    if [ "$(sudo systemctl list-units --full -all -t service --no-legend | grep -F "klipper.service")" ]; then
-        echo "Klipper service found!"
-    else
-        echo "Klipper service not found, please install Klipper first"
-        exit -1
-    fi
-
-}
-
 # Step 2: Clean up legacy installation
 cleanup_legacy() {
     if [ -f "/etc/init.d/moonraker" ]; then
@@ -37,8 +25,8 @@ cleanup_legacy() {
 install_packages()
 {
     PKGLIST="python3-virtualenv python3-dev libopenjp2-7 python3-libgpiod"
-    PKGLIST="${PKGLIST} curl libcurl4-openssl-dev libssl-dev liblmdb0"
-    PKGLIST="${PKGLIST} libsodium-dev zlib1g-dev"
+    PKGLIST="${PKGLIST} curl libcurl4-openssl-dev libssl-dev liblmdb-dev"
+    PKGLIST="${PKGLIST} libsodium-dev zlib1g-dev libjpeg-dev"
 
     # Update system package info
     report_status "Running apt-get update..."
@@ -104,9 +92,7 @@ EOF
 start_software()
 {
     report_status "Launching Moonraker API Server..."
-    sudo systemctl stop klipper
     sudo systemctl restart moonraker
-    sudo systemctl start klipper
 }
 
 # Helper functions
@@ -142,7 +128,6 @@ done
 
 # Run installation steps defined above
 verify_ready
-check_klipper
 cleanup_legacy
 install_packages
 create_virtualenv
