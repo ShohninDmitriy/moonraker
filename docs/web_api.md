@@ -442,7 +442,8 @@ An object containing various fields that report server state.
         "Invalid config option 'api_key_path' detected in section [authorization]. Remove the option to resolve this issue. In the future this will result in a startup error.",
         "Unparsed config section [fake_section] detected.  This may be the result of a component that failed to load.  In the future this will result in a startup error."
     ],
-    "websocket_count": 2
+    "websocket_count": 2,
+    "moonraker_version": "v0.7.1-105-ge4f103c"
   }
 ```
 !!! warning
@@ -2132,6 +2133,7 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             "remote_alias": "origin",
             "branch": "master",
             "owner": "Arksine",
+			"repo_name": "moonraker":
             "version": "v0.4.1-45",
             "remote_version": "v0.4.1-45",
             "full_version_string": "v0.4.1-45-g7e230c1c",
@@ -2163,6 +2165,7 @@ and `fluidd` are present as clients configured in `moonraker.conf`
             "remote_alias": "origin",
             "branch": "master",
             "owner": "Klipper3d",
+			"repo_name": "klipper",
             "version": "v0.9.1-317",
             "remote_version": "v0.9.1-324",
             "full_version_string": "v0.9.1-324-gd77928b1",
