@@ -116,10 +116,9 @@ class PrinterPower:
             "set_device_power", self.set_device_power)
         self.server.register_event_handler(
             "server:klippy_shutdown", self._handle_klippy_shutdown)
+        self.server.register_event_handler(
+            "file_manager:upload_queued", self._handle_upload_queued)
         self.server.register_notification("power:power_changed")
-        event_loop = self.server.get_event_loop()
-        event_loop.register_callback(
-            self._initalize_devices, list(self.devices.values()))
 
     async def _check_klippy_printing(self) -> bool:
         kapis: APIComp = self.server.lookup_component('klippy_apis')
@@ -128,16 +127,14 @@ class PrinterPower:
         pstate = result.get('print_stats', {}).get('state', "").lower()
         return pstate == "printing"
 
-    async def _initalize_devices(self,
-                                 inital_devs: List[PowerDevice]
-                                 ) -> None:
+    async def component_init(self) -> None:
         event_loop = self.server.get_event_loop()
         # Wait up to 5 seconds for the machine component to init
         machine_cmp: Machine = self.server.lookup_component("machine")
         await machine_cmp.wait_for_init(5.)
         cur_time = event_loop.get_loop_time()
         endtime = cur_time + 120.
-        query_devs = inital_devs
+        query_devs = list(self.devices.values())
         failed_devs: List[PowerDevice] = []
         while cur_time < endtime:
             for dev in query_devs:
@@ -166,6 +163,16 @@ class PrinterPower:
                     f"Powering off device [{name}] due to"
                     " klippy shutdown")
                 await self._process_request(dev, "off")
+
+    async def _handle_upload_queued(self, filename: str) -> None:
+        for name, dev in self.devices.items():
+            if dev.has_on_when_queued():
+                if dev.get_state() == "on":
+                    # device already on
+                    continue
+                logging.debug(
+                    f"File '{filename}' queued, powering on device [{name}]")
+                await self._process_request(dev, "on")
 
     async def _handle_list_devices(self,
                                    web_request: WebRequest
@@ -295,6 +302,7 @@ class PowerDevice:
                 raise config.error("Option 'restart_delay' must be above 0.0")
         self.bound_service: Optional[str] = config.get('bound_service', None)
         self.need_scheduled_restart = False
+        self.on_when_queued = config.getboolean('on_when_upload_queued', False)
 
     def _is_bound_to_klipper(self):
         return (
@@ -307,6 +315,9 @@ class PowerDevice:
         if not self.need_scheduled_restart:
             return
         self.need_scheduled_restart = False
+        if state == "ready":
+            logging.info("Klipper reports 'ready', aborting FIRMWARE_RESTART")
+            return
         event_loop = self.server.get_event_loop()
         kapis: APIComp = self.server.lookup_component("klippy_apis")
         event_loop.delay_callback(
@@ -337,12 +348,19 @@ class PowerDevice:
             await machine_cmp.do_service_action(action, self.bound_service)
         if self.state == "on" and self.klipper_restart:
             self.need_scheduled_restart = True
-            if self._is_bound_to_klipper():
+            klippy_state = self.server.get_klippy_state()
+            if klippy_state in ["disconnected", "startup"]:
+                # If klippy is currently disconnected or hasn't proceeded past
+                # the startup state, schedule the restart in the
+                # "klippy_started" event callback.
                 return
             self._schedule_firmware_restart()
 
     def has_off_when_shutdown(self) -> bool:
         return self.off_when_shutdown
+
+    def has_on_when_queued(self) -> bool:
+        return self.on_when_queued
 
     def initialize(self) -> Optional[Coroutine]:
         if self.bound_service is None:
@@ -444,6 +462,8 @@ class HTTPDevice(PowerDevice):
 class GpioChipFactory:
     def __init__(self) -> None:
         self.chips: Dict[str, gpiod.Chip] = {}
+        version: str = gpiod.version_string()
+        self.gpiod_version = tuple(int(v) for v in version.split('.'))
 
     def get_gpio_chip(self, chip_name) -> gpiod.Chip:
         if chip_name in self.chips:
@@ -451,6 +471,9 @@ class GpioChipFactory:
         chip = gpiod.Chip(chip_name, gpiod.Chip.OPEN_BY_NAME)
         self.chips[chip_name] = chip
         return chip
+
+    def get_gpiod_version(self):
+        return self.gpiod_version
 
     def close(self) -> None:
         for chip in self.chips.values():
@@ -475,20 +498,23 @@ class GpioDevice(PowerDevice):
         try:
             chip = chip_factory.get_gpio_chip(chip_id)
             self.line = chip.get_line(pin)
+            args: Dict[str, Any] = {
+                'consumer': "moonraker",
+                'type': gpiod.LINE_REQ_DIR_OUT
+            }
             if invert:
-                self.line.request(
-                    consumer="moonraker", type=gpiod.LINE_REQ_DIR_OUT,
-                    flags=gpiod.LINE_REQ_FLAG_ACTIVE_LOW)
+                args['flags'] = gpiod.LINE_REQ_FLAG_ACTIVE_LOW
+            if chip_factory.get_gpiod_version() < (1, 3):
+                args['default_vals'] = [int(self.initial_state)]
             else:
-                self.line.request(
-                    consumer="moonraker", type=gpiod.LINE_REQ_DIR_OUT)
+                args['default_val'] = int(self.initial_state)
+            self.line.request(**args)
         except Exception:
             self.state = "error"
             logging.exception(
                 f"Unable to init {pin}.  Make sure the gpio is not in "
                 "use by another program or exported by sysfs.")
             raise config.error("Power GPIO Config Error")
-
 
     def _parse_pin(self, config: ConfigHelper) -> Tuple[int, str, bool]:
         pin = cfg_pin = config.get("pin")
@@ -557,10 +583,6 @@ class RFDevice(GpioDevice):
         super().__init__(config)
         self.on = config.get("on_code").zfill(24)
         self.off = config.get("off_code").zfill(24)
-
-    def initialize(self) -> None:
-        super().initialize()
-        self.set_power("on" if self.initial_state else "off")
 
     def _transmit_digit(self, waveform) -> None:
         self.line.set_value(1)
@@ -918,5 +940,5 @@ class Loxonev1(HTTPDevice):
 
 
 # The power component has multiple configuration sections
-def load_component_multi(config: ConfigHelper) -> PrinterPower:
+def load_component(config: ConfigHelper) -> PrinterPower:
     return PrinterPower(config)

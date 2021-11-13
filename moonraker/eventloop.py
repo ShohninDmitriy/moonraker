@@ -11,6 +11,7 @@ import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import (
     TYPE_CHECKING,
+    Awaitable,
     Callable,
     Coroutine,
     Optional,
@@ -19,7 +20,7 @@ from typing import (
 
 if TYPE_CHECKING:
     _T = TypeVar("_T")
-    FlexCallback = Callable[..., Optional[Coroutine]]
+    FlexCallback = Callable[..., Optional[Awaitable]]
 
 class EventLoop:
     TimeoutError = asyncio.TimeoutError
@@ -32,6 +33,7 @@ class EventLoop:
         self.remove_reader = self.aioloop.remove_reader
         self.remove_writer = self.aioloop.remove_writer
         self.get_loop_time = self.aioloop.time
+        self.create_future = self.aioloop.create_future
 
     def register_callback(self,
                           callback: FlexCallback,
