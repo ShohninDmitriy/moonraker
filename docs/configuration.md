@@ -984,3 +984,13 @@ gcode:
                                red=red, green=green, blue=blue, white=white,
                                index=index, transmit=transmit)}
 ```
+
+### `[zeroconf]`
+Enable Zeroconf service registration allowing external services to more
+easily detect and use Moonraker instances.
+
+```ini
+# moonraker.conf
+
+[zeroconf]
+```
