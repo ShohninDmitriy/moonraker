@@ -8,6 +8,7 @@ from __future__ import annotations
 import configparser
 import os
 from utils import SentinelClass
+from components.gpio import GpioOutputPin
 
 # Annotation imports
 from typing import (
@@ -25,7 +26,7 @@ from typing import (
 )
 if TYPE_CHECKING:
     from moonraker import Server
-    from .components.gpio import GpioFactory, GpioOutputPin
+    from components.gpio import GpioFactory
     _T = TypeVar("_T")
     ConfigVal = Union[None, int, float, bool, str]
 
@@ -97,15 +98,19 @@ class ConfigHelper:
                 raise ConfigError(
                     f"No option found ({option}) in section [{self.section}]"
                 ) from None
-            return default
+            val = default
         except Exception:
             raise ConfigError(
                 f"Error parsing option ({option}) from "
                 f"section [{self.section}]")
-        self._check_option(option, val, above, below, minval, maxval)
+        else:
+            self._check_option(option, val, above, below, minval, maxval)
         if self.section in self.orig_sections:
             # Only track sections included in the original config
-            self.parsed[self.section][option] = val
+            if isinstance(val, GpioOutputPin):
+                self.parsed[self.section][option] = str(val)
+            else:
+                self.parsed[self.section][option] = val
         return val
 
     def _check_option(self,
