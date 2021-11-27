@@ -2340,21 +2340,22 @@ The current state of the job queue:
 }
 ```
 
-#### Resume the job queue
+#### Start the job queue
 
-Sets the job queue state to "resume".  This will set the job
-queue to state to "idle".  If the queue is not empty the next job
-in the queue will be loaded.
+Starts the job queue.  If Klipper is ready to start a print the next
+job in the queue will be loaded.  Otherwise the queue will be put
+into the "ready" state, enabling automatic transition after the next
+completed print.
 
 HTTP request:
 ```http
-POST /server/job_queue/resume
+POST /server/job_queue/start
 ```
 JSON-RPC request:
 ```json
 {
     "jsonrpc": "2.0",
-    "method": "server.job_queue.resume",
+    "method": "server.job_queue.start",
     "id": 4654
 }
 ```
@@ -3836,6 +3837,37 @@ When the state of a service changes the following notification is sent:
 ```
 
 The example above shows that the `klipper` service has changed to `inactive`.
+
+#### Job Queue Changed
+Moonraker will send a `job_queue_changed` notification when a change is
+detected to the queue state or the queue itself:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "notify_job_queue_changed",
+    "params": [
+        {
+            "action": "state_changed",
+            "updated_queue": null,
+            "queue_state": "paused"
+        }
+    ]
+}
+```
+
+The object sent with the notification contains the following fields:
+
+- `action`: The action taken to the queue which led to the notification.
+  Will be a string set to one of the following values:
+    - `state_changed`: The queue state has changed
+    - `jobs_added`: One or more jobs were added to the queue
+    - `jobs_removed`: One or more jobs were removed from the queue
+    - `job_loaded`:  A job was popped off the queue and successfull started
+- `updated_queue`:  If the queue itself is changed this will be a list
+   containing each item in the queue.  If the queue has not changed this will
+   be `null`.
+- `queue_state`: The current queue state
 
 ### Appendix
 
