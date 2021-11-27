@@ -28,9 +28,10 @@ class JobQueue:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
         self.queued_jobs: Dict[str, QueuedJob] = {}
-        self.queue_state: str = "ready"
         self.lock = asyncio.Lock()
         self.load_on_start = config.getboolean("load_on_startup", False)
+        self.automatic = config.getboolean("automatic_transition", False)
+        self.queue_state: str = "ready" if self.automatic else "paused"
         self.job_delay = config.getfloat("job_transition_delay", 0.01)
         if self.job_delay <= 0.:
             raise config.error(
@@ -129,8 +130,8 @@ class JobQueue:
                 self.queued_jobs.pop(uid, None)
                 if self.queue_state == "starting":
                     # If the queue was not paused while starting the print,
-                    # reset state to "ready"
-                    self.queue_state = "ready"
+                    set_ready = not self.queued_jobs or self.automatic
+                    self.queue_state = "ready" if set_ready else "paused"
 
     async def _check_can_print(self) -> bool:
         # Query the latest stats
@@ -149,29 +150,13 @@ class JobQueue:
 
     async def queue_job(self, filename: str,
                         check_exists: bool = True
-                        ) -> bool:
+                        ) -> None:
         async with self.lock:
             # Make sure that the file exists
             if check_exists:
                 self._check_job_file(filename)
-            can_print = await self._check_can_print()
-            if (
-                self.queue_state == "ready" and
-                not self.queued_jobs and
-                can_print
-            ):
-                # Printer is ready to accept a print
-                kapis: KlippyAPI = self.server.lookup_component('klippy_apis')
-                try:
-                    await kapis.start_print(filename)
-                except self.server.error:
-                    # Attempt to start print failed, queue the print
-                    pass
-                else:
-                    return True
             queued_job = QueuedJob(filename)
             self.queued_jobs[queued_job.job_id] = queued_job
-            return False
 
     async def pause_queue(self) -> None:
         self.queue_state = "paused"
@@ -239,13 +224,14 @@ class JobQueue:
                                    web_request: WebRequest
                                    ) -> Dict[str, Any]:
         async with self.lock:
-            if self.queue_state == "paused":
-                self.queue_state = "ready"
-                if self.queued_jobs and self.pop_queue_handle is None:
+            if self.queue_state != "loading":
+                if self.queued_jobs and await self._check_can_print():
                     self.queue_state = "loading"
                     event_loop = self.server.get_event_loop()
                     self.pop_queue_handle = event_loop.delay_callback(
                         0.01, self._pop_job)
+                else:
+                    self.queue_state = "ready"
         return {
             'queued_jobs': self._job_map_to_list(),
             'queue_state': self.queue_state
