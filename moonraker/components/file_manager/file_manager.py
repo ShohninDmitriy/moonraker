@@ -61,7 +61,7 @@ class FileManager:
         db: DBComp = self.server.load_component(config, "database")
         gc_path: str = db.get_item(
             "moonraker", "file_manager.gcode_path", "")
-        self.gcode_metadata = MetadataStorage(self.server, gc_path, db)
+        self.gcode_metadata = MetadataStorage(config, gc_path, db)
         self.inotify_handler = INotifyHandler(config, self,
                                               self.gcode_metadata)
         self.write_mutex = asyncio.Lock()
@@ -736,6 +736,7 @@ class InotifyNode:
         self.pending_node_events: Dict[str, asyncio.Handle] = {}
         self.pending_deleted_children: Set[Tuple[str, bool]] = set()
         self.pending_file_events: Dict[str, str] = {}
+        self.is_processing_metadata = False
 
     async def _finish_create_node(self) -> None:
         # Finish a node's creation.  All children that were created
@@ -748,10 +749,12 @@ class InotifyNode:
         node_path = self.get_path()
         root = self.get_root()
         # Scan child nodes for unwatched directories and metadata
+        self.is_processing_metadata = True
         mevts: List[asyncio.Event] = self.scan_node()
         if mevts:
             mfuts = [e.wait() for e in mevts]
             await asyncio.gather(*mfuts)
+        self.is_processing_metadata = False
         self.ihdlr.log_nodes()
         self.ihdlr.notify_filelist_changed(
             "create_dir", root, node_path)
@@ -836,6 +839,10 @@ class InotifyNode:
         if evt_name is None:
             logging.info(f"Invalid file write event: {file_name}")
             return
+        if self.is_processing():
+            logging.debug("Metadata is processing, suppressing write "
+                          f"event: {file_name}")
+            return
         pending_node = self.search_pending_event("create_node")
         if pending_node is not None:
             # if this event was generated as a result of a created parent
@@ -902,6 +909,11 @@ class InotifyNode:
     def get_root(self) -> str:
         return self.parent_node.get_root()
 
+    def is_processing(self) -> bool:
+        if self.is_processing_metadata:
+            return True
+        return self.parent_node.is_processing()
+
     def add_event(self, evt_name: str, timeout: float) -> None:
         if evt_name in self.pending_node_events:
             self.reset_event(evt_name, timeout)
@@ -963,6 +975,9 @@ class InotifyRootNode(InotifyNode):
             return self
         return None
 
+    def is_processing(self) -> bool:
+        return self.is_processing_metadata
+
 class NotifySyncLock:
     def __init__(self, dest_path: str) -> None:
         self.wait_fut: Optional[asyncio.Future] = None
@@ -998,7 +1013,11 @@ class NotifySyncLock:
         if not self.check_need_sync(path):
             return
         self.notified_paths.add(path)
-        if self.wait_fut is not None and self.dest_path == path:
+        if (
+            self.wait_fut is not None and
+            not self.wait_fut.done() and
+            self.dest_path == path
+        ):
             self.wait_fut.set_result(None)
         # Transfer control to waiter
         try:
@@ -1041,6 +1060,7 @@ class INotifyHandler:
         self.watched_nodes: Dict[int, InotifyNode] = {}
         self.pending_moves: Dict[
             int, Tuple[InotifyNode, str, asyncio.Handle]] = {}
+        self.create_gcode_notifications: Dict[str, Any] = {}
 
 
     def add_root_watch(self, root: str, root_path: str) -> None:
@@ -1276,6 +1296,8 @@ class INotifyHandler:
             logging.debug(f"Inotify file move to: {root}, "
                           f"{node_path}, {evt.name}")
             moved_evt = self.pending_moves.pop(evt.cookie, None)
+            # Don't emit file events if the node is processing metadata
+            can_notify = not node.is_processing()
             if moved_evt is not None:
                 # Moved from a currently watched directory
                 prev_parent, prev_name, hdl = moved_evt
@@ -1288,15 +1310,20 @@ class INotifyHandler:
                     # Unable to move, metadata needs parsing
                     mevt = self.parse_gcode_metadata(file_path)
                     await mevt.wait()
-                self.notify_filelist_changed(
-                    "move_file", root, file_path,
-                    prev_root, prev_path)
+                if can_notify:
+                    self.notify_filelist_changed(
+                        "move_file", root, file_path,
+                        prev_root, prev_path)
             else:
                 if root == "gcodes":
                     mevt = self.parse_gcode_metadata(file_path)
                     await mevt.wait()
-                self.notify_filelist_changed(
-                    "create_file", root, file_path)
+                if can_notify:
+                    self.notify_filelist_changed(
+                        "create_file", root, file_path)
+            if not can_notify:
+                logging.debug("Metadata is processing, suppressing move "
+                              f"notification: {file_path}")
         elif evt.mask & iFlags.MODIFY:
             node.schedule_file_event(evt.name, "modify_file")
         elif evt.mask & iFlags.CLOSE_WRITE:
@@ -1321,6 +1348,22 @@ class INotifyHandler:
                 is_valid = False
         elif action not in ["delete_file", "delete_dir"]:
             is_valid = False
+        ext = os.path.splitext(rel_path)[-1].lower()
+        if (
+            is_valid and
+            root == "gcodes" and
+            ext in VALID_GCODE_EXTS and
+            action == "create_file"
+        ):
+            prev_info = self.create_gcode_notifications.get(rel_path, {})
+            if file_info == prev_info:
+                logging.debug("Ignoring duplicate 'create_file' "
+                              f"notification: {rel_path}")
+                is_valid = False
+            else:
+                self.create_gcode_notifications[rel_path] = dict(file_info)
+        elif rel_path in self.create_gcode_notifications:
+            del self.create_gcode_notifications[rel_path]
         file_info['path'] = rel_path
         file_info['root'] = root
         result = {'action': action, 'item': file_info}
@@ -1361,11 +1404,13 @@ METADATA_VERSION = 3
 
 class MetadataStorage:
     def __init__(self,
-                 server: Server,
+                 config: ConfigHelper,
                  gc_path: str,
                  db: DBComp
                  ) -> None:
-        self.server = server
+        self.server = config.get_server()
+        self.enable_object_proc = config.getboolean(
+            'enable_object_processing', False)
         self.gc_path = gc_path
         db.register_local_namespace(METADATA_NAMESPACE)
         self.mddb = db.wrap_namespace(
@@ -1490,11 +1535,14 @@ class MetadataStorage:
                        fname: str,
                        path_info: Dict[str, Any]
                        ) -> asyncio.Event:
+        if fname in self.pending_requests:
+            return self.pending_requests[fname][1]
         mevt = asyncio.Event()
         ext = os.path.splitext(fname)[1]
-        if fname in self.pending_requests or \
-                ext not in VALID_GCODE_EXTS or \
-                self._has_valid_data(fname, path_info):
+        if (
+            ext not in VALID_GCODE_EXTS or
+            self._has_valid_data(fname, path_info)
+        ):
             # request already pending or not necessary
             mevt.set()
             return mevt
@@ -1509,7 +1557,7 @@ class MetadataStorage:
     async def _process_metadata_update(self) -> None:
         while self.pending_requests:
             fname, (path_info, mevt) = \
-                self.pending_requests.popitem()
+                list(self.pending_requests.items())[0]
             if self._has_valid_data(fname, path_info):
                 mevt.set()
                 continue
@@ -1533,6 +1581,7 @@ class MetadataStorage:
                     }
                 logging.info(
                     f"Unable to extract medatadata from file: {fname}")
+            self.pending_requests.pop(fname, None)
             mevt.set()
         self.busy = False
 
@@ -1550,6 +1599,9 @@ class MetadataStorage:
             timeout = 300.
             ufp_path.replace("\"", "\\\"")
             cmd += f" -u \"{ufp_path}\""
+        if self.enable_object_proc:
+            timeout = 300.
+            cmd += " --check-objects"
         shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
         scmd = shell_cmd.build_shell_command(cmd, log_stderr=True)
         result = await scmd.run_with_response(timeout=timeout)

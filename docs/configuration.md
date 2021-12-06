@@ -66,7 +66,19 @@ log_path:
 queue_gcode_uploads: False
 #   When set to True the file manager will add uploads to the job_queue when
 #   the `start_print` flag has been set.  The default if False.
+enable_object_processing: False
+#   When set to True gcode files will be run through a "preprocessor"
+#   during metdata extraction if object tags are detected.  This preprocessor
+#   replaces object tags with G-Code commands compatible with Klipper's
+#   "cancel object" functionality.  Note that this process is file I/O intensive,
+#   it is not recommended for usage on low resource SBCs such as a Pi Zero.
+#   The default is False.
 ```
+
+!!! Note
+    It is also possible to enable object processing directly in the slicer.
+    See the [preprocess-cancellation](https://github.com/kageurufu/cancelobject-preprocessor)
+    documentation for details.
 
 ### `[database]`
 
@@ -578,6 +590,11 @@ enable_auto_refresh: False
 #   When set to False Moonraker will only fetch update state on startup
 #   and clients will need to request that Moonraker updates state.  The
 #   default is False.
+refresh_interval: 672
+#   The interval (in hours) after which the update manager will check
+#   for new updates.  This interval is applies to updates for Moonraker,
+#   Klipper, and System Packages, and is the default for all clients.
+#   The default is 672 hours (28 days).
 enable_system_updates: True
 #   A boolean value that can be used to toggle system package updates.
 #   Currently Moonraker only supports updating packages via APT, so
@@ -622,6 +639,9 @@ persistent_files:
 #   A list of newline separated file names that should persist between
 #   updates.  This is useful for static configuration files, or perhaps
 #   themes.  The default is no persistent files.
+refresh_interval:
+#   This overrides the refresh_interval set in the primary [update_manager]
+#   section.
 ```
 
 This second example is for "applications".  These may be git repositories
@@ -685,6 +705,9 @@ is_system_service: True
 #   If set to true the update manager will attempt to use systemctl to restart
 #   the service after an update has completed.  This can be set to flase for
 #   repos that are not installed as a service.  The default is True.
+refresh_interval:
+#   This overrides the refresh_interval set in the primary [update_manager]
+#   section.
 ```
 
 ## `[Timelapse]`

@@ -32,18 +32,17 @@ from typing import (
     Union,
     Dict,
     List,
+    cast
 )
 if TYPE_CHECKING:
     from tornado.httpclient import HTTPResponse
     from moonraker import Server
     from confighelper import ConfigHelper
     from websockets import WebRequest
-    from components import klippy_apis
-    from components import shell_command
-    from components import database
-    APIComp = klippy_apis.KlippyAPI
-    SCMDComp = shell_command.ShellCommandFactory
-    DBComp = database.MoonrakerDatabase
+    from components.klippy_apis import KlippyAPI as APIComp
+    from components.shell_command import ShellCommandFactory as SCMDComp
+    from components.database import MoonrakerDatabase as DBComp
+    from components.database import NamespaceWrapper
     JsonType = Union[List[Any], Dict[str, Any]]
 
 MOONRAKER_PATH = os.path.normpath(os.path.join(
@@ -55,10 +54,8 @@ KLIPPER_DEFAULT_EXEC = os.path.expanduser("~/klippy-env/bin/python")
 
 # Check To see if Updates are necessary each hour
 UPDATE_REFRESH_INTERVAL_MS = 3600000
-# Perform auto refresh no sooner than 12 hours apart
-MIN_REFRESH_TIME = 43200
 # Perform auto refresh no later than 4am
-MAX_PKG_UPDATE_HOUR = 4
+MAX_UPDATE_HOUR = 4
 
 def get_deploy_class(app_path: str) -> Type:
     if AppDeploy._is_git_repo(app_path):
@@ -131,12 +128,18 @@ class UpdateManager:
                 raise config.error(
                     f"Invalid type '{client_type}' for section [{section}]")
 
+        # Prune stale data from the database
+        umdb = self.cmd_helper.get_umdb()
+        db_keys = umdb.keys()
+        for key in db_keys:
+            if key not in self.updaters:
+                logging.info(f"Removing stale update_manager data: {key}")
+                umdb.pop(key, None)
+
         self.cmd_request_lock = asyncio.Lock()
-        self.init_success: bool = False
         self.klippy_identified_evt: Optional[asyncio.Event] = None
 
         # Auto Status Refresh
-        self.last_refresh_time: float = 0
         self.refresh_cb: Optional[PeriodicCallback] = None
         if auto_refresh_enabled:
             self.refresh_cb = PeriodicCallback(
@@ -173,20 +176,10 @@ class UpdateManager:
 
     async def component_init(self) -> None:
         async with self.cmd_request_lock:
-            if not await self.cmd_helper.init_api_rate_limit():
-                self.server.add_warning(
-                    "update_manager: failed to initalize GitHub API "
-                    "rate limit")
-                self.server.set_failed_component("update_manager")
-                self.init_success = False
-                return
             for updater in list(self.updaters.values()):
-                if isinstance(updater, PackageDeploy):
-                    ret = updater.refresh(False)
-                else:
+                if updater.needs_refresh():
                     ret = updater.refresh()
-                await ret
-        self.init_success = True
+                    await ret
         if self.refresh_cb is not None:
             self.refresh_cb.start()
 
@@ -216,7 +209,7 @@ class UpdateManager:
             })
         async with self.cmd_request_lock:
             await self.updaters['klipper'].refresh()
-        if need_notification and self.init_success:
+        if need_notification:
             vinfo: Dict[str, Any] = {}
             for name, updater in self.updaters.items():
                 vinfo[name] = updater.get_update_status()
@@ -232,10 +225,6 @@ class UpdateManager:
         pstate: str = result.get('print_stats', {}).get('state', "")
         return pstate.lower() == "printing"
 
-    def _check_init_success(self):
-        if not self.init_success:
-            raise self.server.error("Update Manger Failed to Initialize", 500)
-
     async def _handle_auto_refresh(self) -> None:
         if await self._check_klippy_printing():
             # Don't Refresh during a print
@@ -243,11 +232,8 @@ class UpdateManager:
             return
         cur_time = time.time()
         cur_hour = time.localtime(cur_time).tm_hour
-        time_diff = cur_time - self.last_refresh_time
-        # Update packages if it has been more than 12 hours
-        # and the local time is between 12AM and 5AM
-        if time_diff < MIN_REFRESH_TIME or cur_hour >= MAX_PKG_UPDATE_HOUR:
-            # Not within the update time window
+        # Update when the local time is between 12AM and 5AM
+        if cur_hour >= MAX_UPDATE_HOUR:
             return
         vinfo: Dict[str, Any] = {}
         async with self.cmd_request_lock:
@@ -258,7 +244,6 @@ class UpdateManager:
             except Exception:
                 logging.exception("Unable to Refresh Status")
                 return
-        self.last_refresh_time = time.time()
         uinfo = self.cmd_helper.get_rate_limit_stats()
         uinfo['version_info'] = vinfo
         uinfo['busy'] = self.cmd_helper.is_update_busy()
@@ -267,7 +252,6 @@ class UpdateManager:
     async def _handle_update_request(self,
                                      web_request: WebRequest
                                      ) -> str:
-        self._check_init_success()
         if await self._check_klippy_printing():
             raise self.server.error("Update Refused: Klippy is printing")
         app: str = web_request.get_endpoint().split("/")[-1]
@@ -296,7 +280,6 @@ class UpdateManager:
     async def _handle_full_update_request(self,
                                           web_request: WebRequest
                                           ) -> str:
-        self._check_init_success()
         async with self.cmd_request_lock:
             app_name = ""
             self.cmd_helper.set_update_info('full', id(web_request),
@@ -382,31 +365,32 @@ class UpdateManager:
     async def _handle_status_request(self,
                                      web_request: WebRequest
                                      ) -> Dict[str, Any]:
-        self._check_init_success()
         check_refresh = web_request.get_boolean('refresh', False)
-        # Don't refresh if a print is currently in progress or
-        # if an update is in progress.  Just return the current
-        # state
-        if self.cmd_helper.is_update_busy() or \
-                await self._check_klippy_printing():
+        # Override a request to refresh if:
+        #   - An update is in progress
+        #   - Klippy is printing
+        if (
+            self.cmd_helper.is_update_busy() or
+            await self._check_klippy_printing()
+        ):
             check_refresh = False
-        need_refresh = False
+
         if check_refresh:
             # Acquire the command request lock if we want force a refresh
             await self.cmd_request_lock.acquire()
-            # If a request to refresh is received within 1 minute of
-            # a previous refresh, don't force a new refresh.  This gives
-            # clients a fresh state by acquiring the lock and waiting
-            # without unnecessary processing.
-            need_refresh = time.time() > (self.last_refresh_time + 60.)
+            # Now that we have acquired the lock reject attempts to spam
+            # the refresh request.
+            lrt = max([upd.get_last_refresh_time()
+                       for upd in self.updaters.values()])
+            if time.time() < lrt + 60.:
+                check_refresh = False
+                self.cmd_request_lock.release()
         vinfo: Dict[str, Any] = {}
         try:
             for name, updater in list(self.updaters.items()):
-                if need_refresh:
+                if check_refresh:
                     await updater.refresh()
                 vinfo[name] = updater.get_update_status()
-            if need_refresh:
-                self.last_refresh_time = time.time()
         except Exception:
             raise
         finally:
@@ -415,7 +399,7 @@ class UpdateManager:
         ret = self.cmd_helper.get_rate_limit_stats()
         ret['version_info'] = vinfo
         ret['busy'] = self.cmd_helper.is_update_busy()
-        if need_refresh:
+        if check_refresh:
             event_loop = self.server.get_event_loop()
             event_loop.delay_callback(
                 .2, self.server.send_event,
@@ -425,7 +409,6 @@ class UpdateManager:
     async def _handle_repo_recovery(self,
                                     web_request: WebRequest
                                     ) -> str:
-        self._check_init_success()
         if await self._check_klippy_printing():
             raise self.server.error(
                 "Recovery Attempt Refused: Klippy is printing")
@@ -469,6 +452,16 @@ class CommandHelper:
         self.http_client = AsyncHTTPClient()
         self.github_request_cache: Dict[str, CachedGithubResponse] = {}
 
+        # database management
+        db: DBComp = self.server.lookup_component('database')
+        db.register_local_namespace("update_manager")
+        self.umdb = db.wrap_namespace("update_manager")
+
+        # Refresh Time Tracking (default is to refresh every 28 days)
+        reresh_interval = config.getint('refresh_interval', 672)
+        # Convert to seconds
+        self.refresh_interval = reresh_interval * 60 * 60
+
         # GitHub API Rate Limit Tracking
         self.gh_rate_limit: Optional[int] = None
         self.gh_limit_remaining: Optional[int] = None
@@ -481,6 +474,12 @@ class CommandHelper:
 
     def get_server(self) -> Server:
         return self.server
+
+    def get_refresh_interval(self) -> float:
+        return self.refresh_interval
+
+    def get_umdb(self) -> NamespaceWrapper:
+        return self.umdb
 
     def is_debug_enabled(self) -> bool:
         return self.debug_enabled
@@ -517,31 +516,6 @@ class CommandHelper:
             'github_limit_reset_time': self.gh_limit_reset_time,
         }
 
-    async def init_api_rate_limit(self, retries: int = 5) -> bool:
-        url = "https://api.github.com/rate_limit"
-        for i in range(retries):
-            try:
-                resp = await self.github_api_request(url, is_init=True)
-                assert isinstance(resp, dict)
-                core = resp['resources']['core']
-                self.gh_rate_limit = core['limit']
-                self.gh_limit_remaining = core['remaining']
-                self.gh_limit_reset_time = core['reset']
-            except Exception:
-                logging.exception("Error Initializing GitHub API Rate Limit")
-                if i + 1 < retries:
-                    await asyncio.sleep(2.)
-            else:
-                reset_time = time.ctime(self.gh_limit_reset_time)
-                logging.info(
-                    "GitHub API Rate Limit Initialized\n"
-                    f"Rate Limit: {self.gh_rate_limit}\n"
-                    f"Rate Limit Remaining: {self.gh_limit_remaining}\n"
-                    f"Rate Limit Reset Time: {reset_time}, "
-                    f"Seconds Since Epoch: {self.gh_limit_reset_time}")
-                return True
-        return False
-
     async def run_cmd(self,
                       cmd: str,
                       timeout: float = 20.,
@@ -574,12 +548,13 @@ class CommandHelper:
 
     async def github_api_request(self,
                                  url: str,
-                                 is_init: Optional[bool] = False,
                                  retries: int = 5
                                  ) -> JsonType:
-        if self.gh_limit_remaining == 0:
+        if (
+            self.gh_limit_reset_time is not None and
+            self.gh_limit_remaining == 0
+        ):
             curtime = time.time()
-            assert self.gh_limit_reset_time is not None
             if curtime < self.gh_limit_reset_time:
                 raise self.server.error(
                     f"GitHub Rate Limit Reached\nRequest: {url}\n"
@@ -595,6 +570,7 @@ class CommandHelper:
         if etag is not None:
             headers['If-None-Match'] = etag
         for i in range(retries):
+            error: Optional[Exception] = None
             try:
                 fut = self.http_client.fetch(
                     url, headers=headers, connect_timeout=5.,
@@ -618,7 +594,7 @@ class CommandHelper:
                 f"Response Reason: {resp.reason}\n"
                 f"ETag: {etag}")
             if resp.code == 403:
-                raise self.server.error(
+                error = self.server.error(
                     f"Forbidden GitHub Request: {resp.reason}")
             elif resp.code == 304:
                 logging.info(f"Github Request not Modified: {url}")
@@ -630,12 +606,14 @@ class CommandHelper:
                     await asyncio.sleep(1.)
                 continue
             # Update rate limit on return success
-            if 'X-Ratelimit-Limit' in resp.headers and not is_init:
+            if 'X-Ratelimit-Limit' in resp.headers:
                 self.gh_rate_limit = int(resp.headers['X-Ratelimit-Limit'])
                 self.gh_limit_remaining = int(
                     resp.headers['X-Ratelimit-Remaining'])
                 self.gh_limit_reset_time = float(
                     resp.headers['X-Ratelimit-Reset'])
+            if error is not None:
+                raise error
             decoded = json.loads(resp.body)
             if etag is not None:
                 cached_request.update_result(etag, decoded)
@@ -790,15 +768,14 @@ class PackageDeploy(BaseDeploy):
                  config: ConfigHelper,
                  cmd_helper: CommandHelper
                  ) -> None:
-        super().__init__(config, cmd_helper)
+        super().__init__(config, cmd_helper, "system", "", "")
         cmd_helper.set_package_updater(self)
-        self.available_packages: List[str] = []
+        storage = self._load_storage()
+        self.available_packages: List[str] = storage.get('packages', [])
         self.refresh_evt: Optional[asyncio.Event] = None
-        # Initialze to current time so an update is not performed on init
-        self.last_apt_update_time: float = time.time()
         self.mutex: asyncio.Lock = asyncio.Lock()
 
-    async def refresh(self, fetch_packages: bool = True) -> None:
+    async def refresh(self) -> None:
         # TODO: Use python-apt python lib rather than command line for updates
         if self.refresh_evt is not None:
             self.refresh_evt.wait()
@@ -806,7 +783,9 @@ class PackageDeploy(BaseDeploy):
         async with self.mutex:
             self.refresh_evt = asyncio.Event()
             try:
-                await self._update_apt(force=fetch_packages)
+                # Do not force a refresh until the server has started
+                if self.server.is_running():
+                    await self._update_apt(force=True)
                 res = await self.cmd_helper.run_cmd_with_response(
                     "apt list --upgradable", timeout=60.)
                 pkg_list = [p.strip() for p in res.split("\n") if p.strip()]
@@ -822,6 +801,13 @@ class PackageDeploy(BaseDeploy):
                 logging.exception("Error Refreshing System Packages")
             self.refresh_evt.set()
             self.refresh_evt = None
+            # Update Persistent Storage
+            self._save_state()
+
+    def get_persistent_data(self) -> Dict[str, Any]:
+        storage = super().get_persistent_data()
+        storage['packages'] = self.available_packages
+        return storage
 
     async def update(self) -> bool:
         async with self.mutex:
@@ -836,6 +822,7 @@ class PackageDeploy(BaseDeploy):
             except Exception:
                 raise self.server.error("Error updating system packages")
             self.available_packages = []
+            self._save_state()
             self.cmd_helper.notify_update_response(
                 "Package update finished...", is_complete=True)
             return True
@@ -845,12 +832,11 @@ class PackageDeploy(BaseDeploy):
                           notify: bool = False
                           ) -> None:
         curtime = time.time()
-        if force or curtime > self.last_apt_update_time + 3600.:
+        if force or curtime > self.last_refresh_time + 3600.:
             # Don't update if a request was done within the last hour
             await self.cmd_helper.run_cmd(
                 f"{self.APT_CMD} update --allow-releaseinfo-change",
                 timeout=300., notify=notify)
-            self.last_apt_update_time = time.time()
 
     async def install_packages(self,
                                package_list: List[str],
@@ -876,7 +862,7 @@ class WebClientDeploy(BaseDeploy):
                  config: ConfigHelper,
                  cmd_helper: CommandHelper
                  ) -> None:
-        super().__init__(config, cmd_helper)
+        super().__init__(config, cmd_helper, prefix="Web Client")
         self.repo = config.get('repo').strip().strip("/")
         self.owner = self.repo.split("/", 1)[0]
         self.path = pathlib.Path(config.get("path")).expanduser().resolve()
@@ -890,9 +876,12 @@ class WebClientDeploy(BaseDeploy):
                 raise config.error(
                     "Invalid value for option 'persistent_files': "
                     "'.version' can not be persistent")
-        self.version: str = "?"
-        self.remote_version: str = "?"
-        self.dl_info: Tuple[str, str, int] = ("?", "?", 0)
+        storage = self._load_storage()
+        self.version: str = storage.get('version', "?")
+        self.remote_version: str = storage.get('remote_version', "?")
+        dl_info: List[Any] = storage.get('dl_info', ["?", "?", 0])
+        self.dl_info: Tuple[str, str, int] = cast(
+            Tuple[str, str, int], tuple(dl_info))
         self.refresh_evt: Optional[asyncio.Event] = None
         self.mutex: asyncio.Lock = asyncio.Lock()
         logging.info(f"\nInitializing Client Updater: '{self.name}',"
@@ -921,6 +910,7 @@ class WebClientDeploy(BaseDeploy):
                 logging.exception("Error Refreshing Client")
             self.refresh_evt.set()
             self.refresh_evt = None
+            self._save_state()
 
     async def _get_remote_version(self) -> None:
         # Remote state
@@ -954,6 +944,13 @@ class WebClientDeploy(BaseDeploy):
             f"url: {dl_url}\n"
             f"size: {size}\n"
             f"Content Type: {content_type}")
+
+    def get_persistent_data(self) -> Dict[str, Any]:
+        storage = super().get_persistent_data()
+        storage['version'] = self.version
+        storage['remote_version'] = self.remote_version
+        storage['dl_info'] = list(self.dl_info)
+        return storage
 
     async def update(self) -> bool:
         async with self.mutex:
@@ -993,6 +990,7 @@ class WebClientDeploy(BaseDeploy):
                     version_path.write_text, self.version)
             self.cmd_helper.notify_update_response(
                 f"Client Update Finished: {self.name}", is_complete=True)
+            self._save_state()
             return True
 
     def _extract_release(self,
