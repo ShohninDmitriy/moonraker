@@ -87,9 +87,6 @@ class FileManager:
             transports=["websocket"])
         # register client notificaitons
         self.server.register_notification("file_manager:filelist_changed")
-        # Register APIs to handle file uploads
-        self.server.register_upload_handler("/server/files/upload")
-        self.server.register_upload_handler("/api/files/local")
 
         self.server.register_event_handler(
             "server:klippy_identified", self._update_fixed_paths)
@@ -204,6 +201,9 @@ class FileManager:
         root_dir = self.file_paths.get(root, "")
         file_path = os.path.join(root_dir, filename)
         return os.path.exists(file_path)
+
+    def upload_queue_enabled(self) -> bool:
+        return self.queue_gcodes
 
     def sync_inotify_event(self, path: str) -> Optional[NotifySyncLock]:
         if self.notify_sync_lock is None or \

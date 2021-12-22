@@ -17,8 +17,9 @@ from typing import (
 if TYPE_CHECKING:
     from confighelper import ConfigHelper
     from websockets import WebRequest
-    from . import klippy_apis
-    APIComp = klippy_apis.KlippyAPI
+    from .klippy_apis import KlippyAPI as APIComp
+    from .file_manager.file_manager import FileManager
+    from .job_queue import JobQueue
 
 OCTO_VERSION = '1.5.0'
 
@@ -40,6 +41,7 @@ class OctoprintCompat:
         self.server = config.get_server()
         self.software_version = self.server.get_app_args().get(
             'software_version')
+        self.enable_ufp: bool = config.getboolean('enable_ufp', True)
 
         # Local variables
         self.klippy_apis: APIComp = self.server.lookup_component('klippy_apis')
@@ -94,6 +96,13 @@ class OctoprintCompat:
         self.server.register_endpoint(
             '/api/printerprofiles', ['GET'], self._get_printerprofiles,
             transports=['http'], wrap_result=False)
+
+        # Upload Handlers
+        self.server.register_upload_handler(
+            "/api/files/local", location_prefix="api/files/moonraker")
+        self.server.register_endpoint(
+            "/api/files/moonraker/(?P<relative_path>.+)", ['POST'],
+            self._select_file, transports=['http'], wrap_result=False)
 
         # System
         # TODO: shutdown/reboot/restart operations
@@ -211,19 +220,8 @@ class OctoprintCompat:
         Hardcode capabilities to be basically there and use default
         fluid/mainsail webcam path.
         """
-        return {
-            'plugins': {
-                'UltimakerFormatPackage': {
-                    'align_inline_thumbnail': False,
-                    'inline_thumbnail': False,
-                    'inline_thumbnail_align_value': 'left',
-                    'inline_thumbnail_scale_value': '50',
-                    'installed': True,
-                    'installed_version': '0.2.2',
-                    'scale_inline_thumbnail': False,
-                    'state_panel_thumbnail': True,
-                },
-            },
+        settings = {
+            'plugins': {},
             'feature': {
                 'sdSupport': False,
                 'temperatureGraph': False
@@ -238,6 +236,20 @@ class OctoprintCompat:
                 'webcamEnabled': True,
             },
         }
+        if self.enable_ufp:
+            settings['plugins'] = {
+                'UltimakerFormatPackage': {
+                    'align_inline_thumbnail': False,
+                    'inline_thumbnail': False,
+                    'inline_thumbnail_align_value': 'left',
+                    'inline_thumbnail_scale_value': '50',
+                    'installed': True,
+                    'installed_version': '0.2.2',
+                    'scale_inline_thumbnail': False,
+                    'state_panel_thumbnail': True,
+                },
+            }
+        return settings
 
     async def _get_job(self,
                        web_request: WebRequest
@@ -320,9 +332,75 @@ class OctoprintCompat:
                     'current': True,
                     'heatedBed': 'heater_bed' in self.heaters,
                     'heatedChamber': 'chamber' in self.heaters,
+                    'axes': {
+                        'x': {
+                            'speed': 6000.,
+                            'inverted': False
+                        },
+                        'y': {
+                            'speed': 6000.,
+                            'inverted': False
+                        },
+                        'z': {
+                            'speed': 6000.,
+                            'inverted': False
+                        },
+                        'e': {
+                            'speed': 300.,
+                            'inverted': False
+                        }
+                    }
                 }
             }
         }
+
+    async def _select_file(self,
+                           web_request: WebRequest
+                           ) -> None:
+        command: str = web_request.get('command')
+        rel_path: str = web_request.get('relative_path')
+        root, filename = rel_path.strip("/").split("/", 1)
+        fmgr: FileManager = self.server.lookup_component('file_manager')
+        if command == "select":
+            start_print: bool = web_request.get('print', False)
+            if not start_print:
+                # No-op, selecting a file has no meaning in Moonraker
+                return
+            if root != "gcodes":
+                raise self.server.error(
+                    "File must be located in the 'gcodes' root", 400)
+            if not fmgr.check_file_exists(root, filename):
+                raise self.server.error("File does not exist")
+            try:
+                ret = await self.klippy_apis.query_objects(
+                    {'print_stats': None})
+                pstate: str = ret['print_stats']['state']
+            except self.server.error:
+                pstate = "not_avail"
+            started: bool = False
+            if pstate not in ["printing", "paused", "not_avail"]:
+                try:
+                    await self.klippy_apis.start_print(filename)
+                except self.server.error:
+                    started = False
+                else:
+                    logging.debug(f"Job '{filename}' started via Octoprint API")
+                    started = True
+            if not started:
+                if fmgr.upload_queue_enabled():
+                    job_queue: JobQueue = self.server.lookup_component(
+                        'job_queue')
+                    await job_queue.queue_job(filename, check_exists=False)
+                    # Fire the file_manager's upload_queued event for
+                    # compatibility.  We assume that this endpoint is
+                    # requests by Cura after a file has been uploaded.
+                    self.server.send_event("file_manager:upload_queued",
+                                           filename)
+                    logging.debug(f"Job '{filename}' queued via Octoprint API")
+                else:
+                    raise self.server.error("Conflict", 409)
+        else:
+            raise self.server.error(f"Unsupported Command: {command}")
 
 
 def load_component(config: ConfigHelper) -> OctoprintCompat:
