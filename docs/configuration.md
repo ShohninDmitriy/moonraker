@@ -486,6 +486,8 @@ address: 192.168.1.123
 The following options are available for `tasmota` device types:
 
 ```ini
+# moonraker.conf
+#
 #   Note:
 #   If your single-relay Tasmota device switches on/off successfully,
 #   but fails to report its state, ensure that 'SetOption26' is set in
@@ -521,6 +523,8 @@ password: mypassword
 The following options are available for `shelly` device types:
 
 ```ini
+# moonraker.conf
+
 address:
 #   A valid ip address or hostname for the shelly device.  This parameter
 #   must be provided.
@@ -622,6 +626,8 @@ domain: switch
 The following options are available for `loxone` device types:
 
 ```ini
+# moonraker.conf
+
 address:
 #   A valid ip address or hostname for the Loxone server.  This
 #   parameter must be provided.
@@ -640,6 +646,8 @@ output_id:
 The following options are available for `mqtt` device types:
 
 ```ini
+# moonraker.conf
+
 qos:
 #  The MQTT QOS level to use when publishing and subscribing to topics.
 #  The default is to use the setting supplied in the [mqtt] section.
@@ -1105,6 +1113,8 @@ It is also possible for other components within Moonraker to use MQTT to
 publish and subscribe to topics.
 
 ```ini
+# moonraker.conf
+
 [mqtt]
 address:
 #   Address of the Broker.  This may be a hostname or IP Address.  This
@@ -1174,6 +1184,42 @@ api_qos:
 #   The QOS level to use for the API topics. If not provided, the
 #   value specified by "default_qos" will be used.
 ```
+
+#### Publishing topics from Klipper
+
+It is possible to publish a topic from a Klipper gcode macro with the
+`publish_mqtt_topic` remote method.  For example:
+
+```ini
+# printer.cfg
+
+[gcode_macro PUBLISH_ALERT]
+gcode:
+  {% set data = params.PAYLOAD|default(None) %}
+  {action_call_remote_method("publish_mqtt_topic",
+                             topic="klipper/alert",
+                             payload=data,
+                             qos=0,
+                             retain=False,
+                             use_prefix=True)}
+
+```
+
+The `topic` is required, all other parameters are optional.  Below is a brief
+explanation of each parameter:
+
+- `topic`: a valid mqtt topic
+- `payload`: Defaults to an empty payload.  This can be set to string, integer,
+  float, boolean, any json encodable object (dict or list) or None. The default
+  value is None, in which no payload will be sent with the topic
+- `qos`: an integer value in the range from 0 to 2.  The default is the qos
+  set in the configuration.
+- `retain`: When set to True the retain flag will be set with the published topic.
+  Defaults to False.
+- `use_prefix`: When set to True the configured `instance_name` will be prefixed
+  to the topic.  For example, if the instance_name is `my_printer` and the topic
+  is `klipper/alert` the published topic will be `my_printer/klipper/alert`.  The
+  default is False.
 
 ### `[wled]`
 Enables control of an WLED strip.
