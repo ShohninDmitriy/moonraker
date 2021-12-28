@@ -674,6 +674,7 @@ command_payload:
 #      TURN_ON
 #    {% else %}
 #      TURN_OFF
+#    {% endif %}
 #  The above example would resolve to "TURN_ON" if the request is turn the
 #  the device on, and "TURN_OFF" if the request is to turn the device off.
 #  This parameter must be provided.
@@ -1336,7 +1337,7 @@ easily detect and use Moonraker instances.
 
 ### `[secrets]`
 
-Retreives credentials and other information from a "secrets" file
+Retrieves credentials and other information from a "secrets" file
 separate from `moonraker.conf`.  This allows users to safely distribute
 their configuration and log files without revealing credentials and
 other sensitive information.
@@ -1455,12 +1456,12 @@ command_topic: my/mqtt/command
 # Lets assume this device requres a json payload with each command.
 # We will use a dict to generate the payload
 command_payload:
-  {% set my_payload = {} %}
-  {% do my_payload["SOME_FIELD"] = "some_string" %}
-  {% do my_payload["ANOTHER_FIELD"] = True %}
+  {% set my_payload = {"SOME_FIELD": ""} %}
+  # example of calling the dict.update method
+  {% do my_payload.update({"SOME_FIELD": "a string value"}) %}
   # Here we set the actual command, the "command" variable
   # is passed to the context of this template
-  {% do my_payload["POWER_COMMAND"] = command %}
+  {% do my_payload.__setitem__("POWER_COMMAND", command) %}
   # generate the json output
   { my_payload|tojson }
 ```
