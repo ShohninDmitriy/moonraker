@@ -83,6 +83,12 @@ def _regex_find_first(pattern: str, data: str) -> Optional[float]:
             return None
     return val
 
+def _regex_find_string(pattern: str, data: str) -> Optional[str]:
+    match = re.search(pattern, data)
+    if match:
+        return match.group(1)
+    return None
+
 # Slicer parsing implementations
 class BaseSlicer(object):
     def __init__(self, file_path: str) -> None:
@@ -172,6 +178,12 @@ class BaseSlicer(object):
     def parse_filament_weight_total(self) -> Optional[float]:
         return None
 
+    def parse_filament_name(self) -> Optional[str]:
+        return None
+
+    def parse_filament_type(self) -> Optional[str]:
+        return None
+
     def parse_estimated_time(self) -> Optional[float]:
         return None
 
@@ -254,6 +266,9 @@ class BaseSlicer(object):
     def parse_layer_count(self) -> Optional[int]:
         return None
 
+    def parse_nozzle_diameter(self) -> Optional[float]:
+        return None
+
 class UnknownSlicer(BaseSlicer):
     def check_identity(self, data: str) -> Optional[Dict[str, str]]:
         return {'slicer': "Unknown"}
@@ -333,6 +348,14 @@ class PrusaSlicer(BaseSlicer):
         return _regex_find_first(
             r"total\sfilament\sused\s\[g\]\s=\s(\d+\.\d*)", self.footer_data)
 
+    def parse_filament_type(self) -> Optional[str]:
+        return _regex_find_string(
+            r";\sfilament_type\s=\s(.*)", self.footer_data)
+
+    def parse_filament_name(self) -> Optional[str]:
+        return _regex_find_string(
+            r";\sfilament_settings_id\s=\s(.*)", self.footer_data)
+
     def parse_estimated_time(self) -> Optional[float]:
         time_match = re.search(
             r';\sestimated\sprinting\stime.*', self.footer_data)
@@ -358,6 +381,10 @@ class PrusaSlicer(BaseSlicer):
     def parse_first_layer_bed_temp(self) -> Optional[float]:
         return _regex_find_first(
             r"; first_layer_bed_temperature = (\d+\.?\d*)", self.footer_data)
+
+    def parse_nozzle_diameter(self) -> Optional[float]:
+        return _regex_find_first(
+            r";\snozzle_diameter\s=\s(\d+\.\d*)", self.footer_data)
 
     def parse_layer_count(self) -> Optional[int]:
         match = re.search(r"; total layers count = (\d+)", self.footer_data)
@@ -446,6 +473,14 @@ class Cura(BaseSlicer):
         return _regex_find_first(
             r";Filament\sweight\s=\s.(\d+\.\d+).", self.header_data)
 
+    def parse_filament_type(self) -> Optional[str]:
+        return _regex_find_string(
+            r";Filament\stype\s=\s(.*)", self.header_data)
+
+    def parse_filament_name(self) -> Optional[str]:
+        return _regex_find_string(
+            r";Filament\sname\s=\s(.*)", self.header_data)
+
     def parse_estimated_time(self) -> Optional[float]:
         return self._parse_max_float(r";TIME:.*", self.header_data)
 
@@ -456,6 +491,10 @@ class Cura(BaseSlicer):
     def parse_first_layer_bed_temp(self) -> Optional[float]:
         return _regex_find_first(
             r"M190 S(\d+\.?\d*)", self.header_data)
+
+    def parse_nozzle_diameter(self) -> Optional[float]:
+        return _regex_find_first(
+            r";Nozzle\sdiameter\s=\s(\d+\.\d*)", self.header_data)
 
     def parse_thumbnails(self) -> Optional[List[Dict[str, Any]]]:
         # Attempt to parse thumbnails from file metadata
@@ -522,6 +561,10 @@ class Simplify3D(BaseSlicer):
         return _regex_find_first(
             r";\s+Plastic\sweight:\s(\d+\.?\d*)\sg", self.footer_data)
 
+    def parse_filament_name(self) -> Optional[str]:
+        return _regex_find_string(
+            r";\s+printMaterial,(.*)", self.header_data)
+
     def parse_estimated_time(self) -> Optional[float]:
         time_match = re.search(
             r';\s+Build time:.*', self.footer_data)
@@ -562,6 +605,10 @@ class Simplify3D(BaseSlicer):
 
     def parse_first_layer_bed_temp(self) -> Optional[float]:
         return self._get_first_layer_temp("Heated Bed")
+
+    def parse_nozzle_diameter(self) -> Optional[float]:
+        return _regex_find_first(
+            r";\s+extruderDiameter,(\d+\.\d*)", self.header_data)
 
 class KISSlicer(BaseSlicer):
     def check_identity(self, data: str) -> Optional[Dict[str, Any]]:
@@ -656,6 +703,14 @@ class IdeaMaker(BaseSlicer):
             return sum(filament)
         return None
 
+    def parse_filament_type(self) -> Optional[str]:
+        return _regex_find_string(
+            r";Filament\stype\s=\s(.*)", self.header_data)
+
+    def parse_filament_name(self) -> Optional[str]:
+        return _regex_find_string(
+            r";Filament\sname\s=\s(.*)", self.header_data)
+
     def parse_filament_weight_total(self) -> Optional[float]:
         pi = 3.141592653589793
         length = _regex_find_floats(
@@ -682,6 +737,10 @@ class IdeaMaker(BaseSlicer):
     def parse_first_layer_bed_temp(self) -> Optional[float]:
         return _regex_find_first(
             r"M190 S(\d+\.?\d*)", self.header_data)
+
+    def parse_nozzle_diameter(self) -> Optional[float]:
+        return _regex_find_first(
+            r";Nozzle\sdiameter\s=\s(\d+\.\d*)", self.header_data)
 
 class IceSL(BaseSlicer):
     def check_identity(self, data) -> Optional[Dict[str, Any]]:
@@ -720,10 +779,21 @@ SUPPORTED_SLICERS: List[Type[BaseSlicer]] = [
     KISSlicer, IdeaMaker, IceSL
 ]
 SUPPORTED_DATA = [
-    'layer_height', 'first_layer_height', 'object_height',
-    'filament_total', 'filament_weight_total', 'estimated_time',
-    'thumbnails', 'first_layer_bed_temp', 'first_layer_extr_temp',
-    'gcode_start_byte', 'gcode_end_byte', 'layer_count']
+    'gcode_start_byte',
+    'gcode_end_byte',
+    'layer_count',
+    'object_height',
+    'estimated_time',
+    'nozzle_diameter',
+    'layer_height',
+    'first_layer_height',
+    'first_layer_extr_temp',
+    'first_layer_bed_temp',
+    'filament_name',
+    'filament_type',
+    'filament_total',
+    'filament_weight_total',
+    'thumbnails']
 
 def process_objects(file_path: str) -> None:
     fname = os.path.basename(file_path)
