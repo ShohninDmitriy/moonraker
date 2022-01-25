@@ -1244,7 +1244,9 @@ explanation of each parameter:
   default is False.
 
 ### `[wled]`
-Enables control of an WLED strip.
+Enables control of a [WLED](https://kno.wled.ge/) strip. Moonraker always
+supports 4 color channel strips - the color order is defined within WLED
+itself.
 
 ```ini
 # moonraker.conf
@@ -1272,8 +1274,8 @@ initial_white:
 chain_count:
 #   Number of addressable neopixels for use (default: 1)
 color_order:
+#   *** DEPRECATED - Color order is defined per GPIO in WLED directly ***
 #   Color order for WLED strip, RGB or RGBW (default: RGB)
-
 ```
 Below are some examples:
 ```ini
@@ -1307,7 +1309,7 @@ one or more macros, such as:
 # printer.cfg
 
 [gcode_macro WLED_ON]
-description: Turn WLED strip on using optional preset
+description: Turn WLED strip on using optional preset and resets led colors
 gcode:
   {% set strip = params.STRIP|string %}
   {% set preset = params.PRESET|default(-1)|int %}
@@ -1327,7 +1329,7 @@ gcode:
                              state=False)}
 
 [gcode_macro SET_WLED]
-description: SET_LED like functionlity for WLED
+description: SET_LED like functionlity for WLED, applies to all active segments
 gcode:
     {% set strip = params.STRIP|string %}
     {% set red = params.RED|default(0)|float %}
