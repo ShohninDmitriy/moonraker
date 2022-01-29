@@ -80,6 +80,35 @@ enable_object_processing: False
     See the [preprocess-cancellation](https://github.com/kageurufu/cancelobject-preprocessor)
     documentation for details.
 
+### `[machine]`
+
+The `machine` section provides configuration for Moonraker's machine component, which
+is responsible for for collecting "machine" (ie: PC, SBC, etc) data and communicating
+with system services such as systemd.
+
+```ini
+# moonraker.conf
+[machine]
+provider: systemd_dbus
+#   The provider implementation used to collect system service information
+#   and run service actions (ie: start, restart, stop).  This can be "none",
+#   "systemd_dbus", or "systemd_cli".  If the provider is set to "none" service
+#   action APIs will be disabled.  The default is systemd_dbus.
+```
+
+!!! Note
+    See the [install documentation](installation.md#policykit-permissions) for
+    details on PolicyKit permissions when using the DBus provider.
+
+!!! Warning
+    Some distributions (ie: DietPi) disable and mask the `systemd-logind`
+    service.  This service is necessary for the DBus provider to issue
+    `reboot` and `shutdown` commands.  In this scenario, Moonraker will fall
+    back to CLI based `reboot` and `shutdown` commands.  These commands require
+    that Moonraker be able to run `sudo` commands without a password.
+    Alternatively it may be possible to enable the `systemd-logind` service,
+    consult with your distro's documentation.
+
 ### `[database]`
 
 The `database` section provides configuration for Moonraker's lmdb database.
@@ -303,8 +332,9 @@ The following configuration options are available for all power device types:
 
 [power device_name]
 type:
-#   The type of device.  Can be either gpio, rf, tplink_smartplug, tasmota
-#   shelly, homeseer, homeassistant, loxonev1, or mqtt.
+#   The type of device.  Can be either gpio, klipper_device, rf,
+#   tplink_smartplug, tasmota, shelly, homeseer, homeassistant, loxonev1,
+#   or mqtt.
 #   This parameter must be provided.
 off_when_shutdown: False
 #   If set to True the device will be powered off when Klipper enters
@@ -378,15 +408,11 @@ initial_state: off
 timer:
 #    A time (in seconds) after which the device will power off after being.
 #    switched on. This effectively turns the device into a  momentary switch.
-#    This option is available for gpio, tplink_smartplug, shelly, and tasmota
-#    devices.  The timer may be a floating point value for gpio types, it should
-#    be an integer for all other types.  The default is no timer is set.
+#    This option is available for gpio, klipper_device, tplink_smartplug,
+#    shelly, and tasmota devices.  The timer may be a floating point value
+#    for gpio types, it should be an integer for all other types.  The
+#    default is no timer is set.
 ```
-
-!!! Note
-    Moonraker can only be used to toggle host device GPIOs (ie: GPIOs on your
-    PC or SBC).  Moonraker cannot control GPIOs on an MCU, Klipper should be
-    used for this purpose.
 
 Examples:
 
@@ -414,6 +440,42 @@ pin: gpiochip0/gpio17
 initial_state: on
 ```
 
+#### Klipper Device Configuration
+
+The following options are available for `klipper_device` device types:
+
+```ini
+# moonraker.conf
+
+object_name: output_pin my_pin
+#    The Klipper object_name (as defined in your Klipper config).  Valid examples:
+#      output_pin my_pin
+#    This parameter must be provided for "klipper_device" type devices.
+#    Currently, only `output_pin` Klipper devices are supported.
+timer:
+#    A time (in seconds) after which the device will power off after being.
+#    switched on. This effectively turns the device into a  momentary switch.
+#    This option is available for gpio, klipper_device, tplink_smartplug,
+#    shelly, and tasmota devices.  The timer may be a floating point value
+#    for gpio types, it should be an integer for all other types.  The
+#    default is no timer is set.
+```
+
+!!! Note
+    These devices cannot be used to toggle Klipper's power supply as they
+    require Klipper to actually be running.
+
+Examples:
+
+```ini
+# moonraker.conf
+
+# Control a relay providing power to the printer
+[power my_pin]
+type: klipper_device
+object_name: output_pin my_pin
+```
+
 #### RF Device Configuration
 
 The following options are available for gpio controlled `rf` device types:
@@ -437,9 +499,10 @@ initial_state: off
 timer:
 #    A time (in seconds) after which the device will power off after being.
 #    switched on. This effectively turns the device into a  momentary switch.
-#    This option is available for gpio, tplink_smartplug, shelly, and tasmota
-#    devices.  The timer may be a floating point value for gpio types, it should
-#    be an integer for all other types.  The default is no timer is set.
+#    This option is available for gpio, klipper_device, tplink_smartplug,
+#    shelly, and tasmota devices.  The timer may be a floating point value
+#    for gpio types, it should be an integer for all other types.  The
+#    default is no timer is set.
 on_code:
 off_code:
 #   Valid binary codes that are sent via the RF transmitter.
@@ -869,6 +932,11 @@ enable_system_updates: True
 #   that prefer to manage their packages directly.  Note that if this
 #   is set to False users will be need to make sure that all system
 #   dependencies are up to date.  The default is True.
+enable_packagekit: True
+#   This option is available when system updates are enabled via the
+#   "enable_system_updates" option.  When set to True, system package
+#   updates will be processed via PackageKit over D-Bus.  When set to False
+#   the "apt cli" fallback will be used.  The default is True.
 channel: dev
 #   The update channel applied to Klipper and Moonraker.  May be 'dev'
 #   which will fetch updates using git, or 'beta' which will fetch
