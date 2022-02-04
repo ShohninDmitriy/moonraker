@@ -18,6 +18,8 @@ import hashlib
 import json
 import shlex
 import re
+import shutil
+import filecmp
 from queue import SimpleQueue as Queue
 
 # Annotation imports
@@ -138,7 +140,8 @@ def get_software_version() -> str:
 
 def setup_logging(app_args: Dict[str, Any]
                   ) -> Tuple[logging.handlers.QueueListener,
-                             Optional[MoonrakerLoggingHandler]]:
+                             Optional[MoonrakerLoggingHandler],
+                             Optional[str]]:
     root_logger = logging.getLogger()
     queue: Queue = Queue()
     queue_handler = LocalQueueHandler(queue)
@@ -150,20 +153,30 @@ def setup_logging(app_args: Dict[str, Any]
     stdout_hdlr.setFormatter(stdout_fmt)
     for name, val in app_args.items():
         logging.info(f"{name}: {val}")
-    file_hdlr = None
-    if app_args.get('log_file', ""):
-        file_hdlr = MoonrakerLoggingHandler(
-            app_args, when='midnight', backupCount=2)
-        formatter = logging.Formatter(
-            '%(asctime)s [%(filename)s:%(funcName)s()] - %(message)s')
-        file_hdlr.setFormatter(formatter)
-        listener = logging.handlers.QueueListener(
-            queue, file_hdlr, stdout_hdlr)
-    else:
+    warning: Optional[str] = None
+    file_hdlr: Optional[MoonrakerLoggingHandler] = None
+    listener: Optional[logging.handlers.QueueListener] = None
+    log_file: str = app_args.get('log_file', "")
+    if log_file:
+        try:
+            file_hdlr = MoonrakerLoggingHandler(
+                app_args, when='midnight', backupCount=2)
+            formatter = logging.Formatter(
+                '%(asctime)s [%(filename)s:%(funcName)s()] - %(message)s')
+            file_hdlr.setFormatter(formatter)
+            listener = logging.handlers.QueueListener(
+                queue, file_hdlr, stdout_hdlr)
+        except Exception:
+            log_file = os.path.normpath(log_file)
+            dir_name = os.path.dirname(log_file)
+            warning = f"Unable to create log file at '{log_file}'. " \
+                      f"Make sure that the folder '{dir_name}' exists " \
+                      f"and Moonraker has Read/Write access to the folder. "
+    if listener is None:
         listener = logging.handlers.QueueListener(
             queue, stdout_hdlr)
     listener.start()
-    return listener, file_hdlr
+    return listener, file_hdlr, warning
 
 def hash_directory(dir_path: str,
                    ignore_exts: List[str],
@@ -219,3 +232,22 @@ def load_system_module(name: str) -> ModuleType:
     else:
         raise ServerError(f"Unable to import module {name}")
     return module
+
+def backup_config(cfg_path: str) -> None:
+    cfg = pathlib.Path(cfg_path).expanduser().resolve()
+    backup = cfg.parent.joinpath(f".{cfg.name}.bkp")
+    try:
+        if backup.exists() and filecmp.cmp(cfg, backup):
+            # Backup already exists and is current
+            return
+        shutil.copy2(cfg, backup)
+        logging.info(f"Backing up last working configuration to '{backup}'")
+    except Exception:
+        logging.exception("Failed to create a backup")
+
+def find_config_backup(cfg_path: str) -> Optional[str]:
+    cfg = pathlib.Path(cfg_path).expanduser().resolve()
+    backup = cfg.parent.joinpath(f".{cfg.name}.bkp")
+    if backup.is_file():
+        return str(backup)
+    return None
