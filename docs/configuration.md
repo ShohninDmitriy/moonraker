@@ -334,7 +334,7 @@ The following configuration options are available for all power device types:
 type:
 #   The type of device.  Can be either gpio, klipper_device, rf,
 #   tplink_smartplug, tasmota, shelly, homeseer, homeassistant, loxonev1,
-#   or mqtt.
+#   smartthings, or mqtt.
 #   This parameter must be provided.
 off_when_shutdown: False
 #   If set to True the device will be powered off when Klipper enters
@@ -881,6 +881,42 @@ state_response_template:
 # not necessary to query after a command
 query_after_command: False
 ```
+####  SmartThings (HTTP)
+
+!!! Important
+    SmartThings Developer API Topics:
+
+    * See [Getting a Bearer Token](https://developer-preview.smartthings.com/docs/advanced/authorization-and-permissions/)
+    * See [Getting a list of devices](https://developer-preview.smartthings.com/api/public#operation/getDevices)
+
+The following options are available for `smartthings` device types:
+
+```ini
+# moonraker.conf
+
+address: api.smartthings.com
+protocol: https
+port: 443
+token:
+#   A token used for request authorization.  This option accepts
+#   Jinja2 Templates, see the [secrets] section for details. This paramter
+#   must be provided.
+device:
+#   The Device guid of the switch to control. This parameter must be provided.
+```
+
+Example:
+```ini
+# moonraker.conf
+
+[power smartthings_switch]
+type: smartthings
+address: api.smartthings.com
+protocol: https
+port: 443
+token: smartthings-bearer-token
+device: smartthings-device-id
+```
 
 #### Toggling device state from Klipper
 
@@ -1039,6 +1075,16 @@ persistent_files:
 refresh_interval:
 #   This overrides the refresh_interval set in the primary [update_manager]
 #   section.
+info_tags:
+#   Optional information tags about this application that are reported to
+#   clients as a list of strings. Each tag should be separated by a new line.
+#   For example:
+#       info_tags:
+#           desc=My Client App
+#           action=webcam_restart
+#   Clients my use these tags to perform additonal actions or display
+#   information, see your client documentation for details on configuration.
+#   The default is an empty list.
 ```
 
 This second example is for "applications".  These may be git repositories
@@ -1105,6 +1151,16 @@ is_system_service: True
 refresh_interval:
 #   This overrides the refresh_interval set in the primary [update_manager]
 #   section.
+info_tags:
+#   Optional information tags about this application that are reported to
+#   clients as a list of strings. Each tag should be separated by a new line.
+#   For example:
+#       info_tags:
+#           desc=Special Application
+#           klipper_restart
+#   Clients my use these tags to perform additonal actions or display
+#   information, see your client documentation for details on configuration.
+#   The default is an empty list.
 ```
 
 ## `[Timelapse]`
