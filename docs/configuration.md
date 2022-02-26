@@ -75,7 +75,17 @@ enable_object_processing: False
 #   The default is False.
 ```
 
-!!! Note
+!!! Warning
+    Moonraker currently supports two paths with read/write access, the
+    `config_path` configured in the `file_manager` and the `virtual_sdcard` path
+    configured through Klipper in `printer.cfg`. These paths are monitored for
+    changes, thus they must not overlap. Likewise, these paths may not be a
+    parent or child of folders containing sensitive files such as the `database`,
+    Moonraker's source, or Klipper's source.  If either of the above conditions
+    are present Moonraker will generate a warning and revoke access to the
+    offending path.
+
+!!! Tip
     It is also possible to enable object processing directly in the slicer.
     See the [preprocess-cancellation](https://github.com/kageurufu/cancelobject-preprocessor)
     documentation for details.
@@ -108,6 +118,23 @@ provider: systemd_dbus
     that Moonraker be able to run `sudo` commands without a password.
     Alternatively it may be possible to enable the `systemd-logind` service,
     consult with your distro's documentation.
+
+#### Reboot / Shutdown from Klipper
+
+It is possible to call the `shutdown_machine` and `reboot_machine`
+remote methods from a gcode macro in Klipper.  For example:
+
+```ini
+# printer.cfg
+
+[gcode_macro SHUTDOWN]
+gcode:
+  {action_call_remote_method("shutdown_machine")}
+
+[gcode_macro REBOOT]
+gcode:
+  {action_call_remote_method("reboot_machine")}
+```
 
 ### `[database]`
 
@@ -235,9 +262,9 @@ force_logins: False
 ```
 
 ### `[octoprint_compat]`
-Enables partial support of Octoprint API is implemented with the purpose of
+Enables partial support of OctoPrint API is implemented with the purpose of
 allowing uploading of sliced prints to a moonraker instance.
-Currently we support Slic3r derivatives and Cura with Cura-Octoprint.
+Currently we support Slic3r derivatives and Cura with Cura-OctoPrint.
 
 ```ini
 # moonraker.conf
@@ -259,7 +286,7 @@ rotate_90: False
 stream_url: /webcam/?action=stream
 #   The URL to use for streaming the webcam.  It can be set to an absolute
 #   URL if needed. In order to get the webcam to work in Cura through
-#   an Octoprint connection, you can set this value to
+#   an OctoPrint connection, you can set this value to
 #   http://<octoprint ip>/webcam/?action=stream.  The default value is
 #   /webcam/?action=stream.
 webcam_enabled: True
@@ -1768,6 +1795,15 @@ username: {secrets.mqtt_credentials.username}
 password: {secrets.mqtt_credentials.password}
 enable_moonraker_api: True
 ```
+
+!!! warning
+    The purpose of the `[secrets]` module is to keep credentials and
+    other sensitive information out of configuration files and Moonraker's
+    log.  These items are stored in plain text, it is wise to use
+    unique credentials. Never leave a Moonraker client application open
+    unattended in an untrusted location, as it would be possible for a
+    malicious actor to reconfigure moonraker to send items stored in the
+    secrets file to themselves via `mqtt`, `notifer`, etc.
 
 Home Assistant Switch Example:
 
