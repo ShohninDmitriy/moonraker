@@ -11,7 +11,6 @@ import json
 import shutil
 import re
 import time
-import tempfile
 import zipfile
 from .app_deploy import AppDeploy
 from utils import verify_source
@@ -185,9 +184,9 @@ class ZipDeploy(AppDeploy):
                 f"Host repo mismatch, received: {host_repo}, "
                 f"expected: {self.host_repo}. This could result in "
                 " a failed update.")
-        url = f"https://api.github.com/repos/{self.host_repo}/releases"
+        resource = f"repos/{self.host_repo}/releases"
         current_release, latest_release = await self._fetch_github_releases(
-            url, release_tag)
+            resource, release_tag)
         await self._validate_current_release(release_info, current_release)
         if not self.errors:
             self.verified = True
@@ -196,11 +195,14 @@ class ZipDeploy(AppDeploy):
         self._log_zipapp_info()
 
     async def _fetch_github_releases(self,
-                                     release_url: str,
+                                     resource: str,
                                      current_tag: Optional[str] = None
                                      ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         try:
-            releases = await self.cmd_helper.github_api_request(release_url)
+            client = self.cmd_helper.get_http_client()
+            resp = await client.github_api_request(resource, attempts=3)
+            resp.raise_for_status()
+            releases = resp.json()
             assert isinstance(releases, list)
         except Exception:
             self.log_exc("Error fetching releases from GitHub")
@@ -237,8 +239,8 @@ class ZipDeploy(AppDeploy):
             self._add_error(
                 "RELEASE_INFO not found in current release assets")
         info_url, content_type, size = asset_info['RELEASE_INFO']
-        rinfo_bytes = await self.cmd_helper.http_download_request(
-            info_url, content_type)
+        client = self.cmd_helper.get_http_client()
+        rinfo_bytes = await client.get_file(info_url, content_type)
         github_rinfo: Dict[str, Any] = json.loads(rinfo_bytes)
         if github_rinfo.get(self.name, {}) != release_info:
             self._add_error(
@@ -255,8 +257,8 @@ class ZipDeploy(AppDeploy):
         asset_info = self._get_asset_urls(release, asset_names)
         if "RELEASE_INFO" in asset_info:
             asset_url, content_type, size = asset_info['RELEASE_INFO']
-            rinfo_bytes = await self.cmd_helper.http_download_request(
-                asset_url, content_type)
+            client = self.cmd_helper.get_http_client()
+            rinfo_bytes = await client.get_file(asset_url, content_type)
             update_release_info: Dict[str, Any] = json.loads(rinfo_bytes)
             update_info = update_release_info.get(self.name, {})
             self.lastest_hash = update_info.get('commit_hash', "?")
@@ -272,8 +274,8 @@ class ZipDeploy(AppDeploy):
             # Only report commit log if versions change
             if "COMMIT_LOG" in asset_info:
                 asset_url, content_type, size = asset_info['COMMIT_LOG']
-                commit_bytes = await self.cmd_helper.http_download_request(
-                    asset_url, content_type)
+                client = self.cmd_helper.get_http_client()
+                commit_bytes = await client.get_file(asset_url, content_type)
                 commit_info: Dict[str, Any] = json.loads(commit_bytes)
                 self.commit_log = commit_info.get(self.name, [])
         if zip_file_name in asset_info:
@@ -375,17 +377,21 @@ class ZipDeploy(AppDeploy):
         npm_hash = await self._get_file_hash(self.npm_pkg_json)
         dl_url, content_type, size = self.release_download_info
         self.notify_status("Starting Download...")
-        with tempfile.TemporaryDirectory(
-                suffix=self.name, prefix="app") as tempdirname:
-            tempdir = pathlib.Path(tempdirname)
+        td = await self.cmd_helper.create_tempdir(self.name, "app")
+        try:
+            tempdir = pathlib.Path(td.name)
             temp_download_file = tempdir.joinpath(f"{self.name}.zip")
-            await self.cmd_helper.streaming_download_request(
-                dl_url, temp_download_file, content_type, size)
+            client = self.cmd_helper.get_http_client()
+            await client.download_file(
+                dl_url, content_type, temp_download_file, size,
+                self.cmd_helper.on_download_progress)
             self.notify_status(
                 f"Download Complete, extracting release to '{self.path}'")
             event_loop = self.server.get_event_loop()
             await event_loop.run_in_thread(
                 self._extract_release, temp_download_file)
+        finally:
+            await event_loop.run_in_thread(td.cleanup)
         await self._update_dependencies(npm_hash, force=force_dep_update)
         await self._update_repo_state()
         await self.restart_service()
@@ -396,8 +402,8 @@ class ZipDeploy(AppDeploy):
                       hard: bool = False,
                       force_dep_update: bool = False
                       ) -> None:
-        url = f"https://api.github.com/repos/{self.host_repo}/releases"
-        releases = await self._fetch_github_releases(url)
+        res = f"repos/{self.host_repo}/releases"
+        releases = await self._fetch_github_releases(res)
         await self._process_latest_release(releases[1])
         await self.update(force_dep_update=force_dep_update)
 
