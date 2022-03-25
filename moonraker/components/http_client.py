@@ -32,10 +32,7 @@ if TYPE_CHECKING:
     from io import BufferedWriter
     StrOrPath = Union[str, pathlib.Path]
 
-# Configure the http client to use the pycurl based implementation
-AsyncHTTPClient.configure(
-    "tornado.curl_httpclient.CurlAsyncHTTPClient",
-    defaults=dict(user_agent="Moonraker"))
+AsyncHTTPClient.configure(None, defaults=dict(user_agent="Moonraker"))
 
 GITHUB_PREFIX = "https://api.github.com/"
 
@@ -147,9 +144,10 @@ class HttpClient:
                 if resp.code == 304:
                     err = None
                     if cached is None:
-                        logging.info(
-                            "Request returned 304, however no cached "
-                            "item was found")
+                        if enable_cache:
+                            logging.info(
+                                "Request returned 304, however no cached "
+                                "item was found")
                         result = b""
                     else:
                         logging.debug(f"Request returned from cache: {url}")
