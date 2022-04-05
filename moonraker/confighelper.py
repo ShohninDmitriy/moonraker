@@ -72,6 +72,9 @@ class ConfigHelper:
     def has_option(self, option: str) -> bool:
         return self.config.has_option(self.section, option)
 
+    def set_option(self, option: str, value: str) -> None:
+        self.config[self.section][option] = value
+
     def get_name(self) -> str:
         return self.section
 
@@ -208,7 +211,7 @@ class ConfigHelper:
                  option: str,
                  default: Union[SentinelClass, _T] = SENTINEL,
                  list_type: Type = str,
-                 separators: Tuple[str, ...] = ('\n',),
+                 separators: Tuple[Optional[str], ...] = ('\n',),
                  count: Optional[Tuple[Optional[int], ...]] = None,
                  deprecate: bool = False
                  ) -> Union[List[Any], _T]:
@@ -222,7 +225,7 @@ class ConfigHelper:
 
         def list_parser(value: str,
                         ltype: Type,
-                        seps: Tuple[str, ...],
+                        seps: Tuple[Optional[str], ...],
                         expected_cnt: Tuple[Optional[int], ...]
                         ) -> List[Any]:
             sep = seps[0]
@@ -257,7 +260,7 @@ class ConfigHelper:
     def getlist(self,
                 option: str,
                 default: Union[SentinelClass, _T] = SENTINEL,
-                separator: str = '\n',
+                separator: Optional[str] = '\n',
                 count: Optional[int] = None,
                 deprecate: bool = False
                 ) -> Union[List[str], _T]:
@@ -267,7 +270,7 @@ class ConfigHelper:
     def getintlist(self,
                    option: str,
                    default: Union[SentinelClass, _T] = SENTINEL,
-                   separator: str = '\n',
+                   separator: Optional[str] = '\n',
                    count: Optional[int] = None,
                    deprecate: bool = False
                    ) -> Union[List[int], _T]:
@@ -277,7 +280,7 @@ class ConfigHelper:
     def getfloatlist(self,
                      option: str,
                      default: Union[SentinelClass, _T] = SENTINEL,
-                     separator: str = '\n',
+                     separator: Optional[str] = '\n',
                      count: Optional[int] = None,
                      deprecate: bool = False
                      ) -> Union[List[float], _T]:
@@ -287,7 +290,7 @@ class ConfigHelper:
     def getdict(self,
                 option: str,
                 default: Union[SentinelClass, _T] = SENTINEL,
-                separators: Tuple[str, str] = ('\n', '='),
+                separators: Tuple[Optional[str], Optional[str]] = ('\n', '='),
                 dict_type: Type = str,
                 allow_empty_fields: bool = False,
                 deprecate: bool = False

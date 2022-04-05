@@ -9,13 +9,13 @@ import asyncio
 import os
 import pathlib
 import logging
-import sys
 import shutil
 import zipfile
 import time
 import tempfile
 import re
 from thirdparty.packagekit import enums as PkEnum
+from . import base_config
 from .base_deploy import BaseDeploy
 from .app_deploy import AppDeploy
 from .git_deploy import GitDeploy
@@ -27,6 +27,7 @@ from typing import (
     Any,
     Awaitable,
     Optional,
+    Set,
     Tuple,
     Type,
     Union,
@@ -50,13 +51,6 @@ if TYPE_CHECKING:
     from dbus_next.aio import ProxyInterface
     JsonType = Union[List[Any], Dict[str, Any]]
 
-MOONRAKER_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), "../../.."))
-SUPPLEMENTAL_CFG_PATH = os.path.join(
-    os.path.dirname(__file__), "update_manager.conf")
-KLIPPER_DEFAULT_PATH = os.path.expanduser("~/klipper")
-KLIPPER_DEFAULT_EXEC = os.path.expanduser("~/klippy-env/bin/python")
-
 # Check To see if Updates are necessary each hour
 UPDATE_REFRESH_INTERVAL = 3600.
 # Perform auto refresh no later than 4am
@@ -72,44 +66,30 @@ class UpdateManager:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
         self.event_loop = self.server.get_event_loop()
-        self.app_config = config.read_supplemental_config(
-            SUPPLEMENTAL_CFG_PATH)
-        auto_refresh_enabled = config.getboolean('enable_auto_refresh', False)
         self.channel = config.get('channel', "dev")
         if self.channel not in ["dev", "beta"]:
             raise config.error(
                 f"Unsupported channel '{self.channel}' in section"
                 " [update_manager]")
+        self.app_config = base_config.get_base_configuration(
+            config, self.channel
+        )
+        auto_refresh_enabled = config.getboolean('enable_auto_refresh', False)
         self.cmd_helper = CommandHelper(config)
         self.updaters: Dict[str, BaseDeploy] = {}
         if config.getboolean('enable_system_updates', True):
             self.updaters['system'] = PackageDeploy(config, self.cmd_helper)
-        db: DBComp = self.server.lookup_component('database')
-        kpath = db.get_item("moonraker", "update_manager.klipper_path",
-                            KLIPPER_DEFAULT_PATH).result()
-        kenv_path = db.get_item("moonraker", "update_manager.klipper_exec",
-                                KLIPPER_DEFAULT_EXEC).result()
+        mcfg = self.app_config["moonraker"]
+        kcfg = self.app_config["klipper"]
+        mclass = get_deploy_class(mcfg.get("path"))
+        self.updaters['moonraker'] = mclass(mcfg, self.cmd_helper)
+        kclass = BaseDeploy
         if (
-            os.path.exists(kpath) and
-            os.path.exists(kenv_path)
+            os.path.exists(kcfg.get("path")) and
+            os.path.exists(kcfg.get("env"))
         ):
-            self.updaters['klipper'] = get_deploy_class(kpath)(
-                self.app_config[f"update_manager klipper"], self.cmd_helper,
-                {
-                    'channel': self.channel,
-                    'path': kpath,
-                    'executable': kenv_path
-                })
-        else:
-            self.updaters['klipper'] = BaseDeploy(
-                self.app_config[f"update_manager klipper"], self.cmd_helper)
-        self.updaters['moonraker'] = get_deploy_class(MOONRAKER_PATH)(
-            self.app_config[f"update_manager moonraker"], self.cmd_helper,
-            {
-                'channel': self.channel,
-                'path': MOONRAKER_PATH,
-                'executable': sys.executable
-            })
+            kclass = get_deploy_class(kcfg.get("path"))
+        self.updaters['klipper'] = kclass(kcfg, self.cmd_helper)
 
         # TODO: The below check may be removed when invalid config options
         # raise a config error.
@@ -126,17 +106,25 @@ class UpdateManager:
             cfg = config[section]
             name = section.split()[-1]
             if name in self.updaters:
-                raise config.error(f"Client repo {name} already added")
-            client_type = cfg.get("type")
-            if client_type in ["web", "web_beta"]:
-                self.updaters[name] = WebClientDeploy(cfg, self.cmd_helper)
-            elif client_type in ["git_repo", "zip", "zip_beta"]:
-                path = os.path.expanduser(cfg.get('path'))
-                self.updaters[name] = get_deploy_class(path)(
-                    cfg, self.cmd_helper)
-            else:
-                raise config.error(
-                    f"Invalid type '{client_type}' for section [{section}]")
+                self.server.add_warning(
+                    f"[update_manager]: Extension {name} already added"
+                )
+                continue
+            try:
+                client_type = cfg.get("type")
+                if client_type in ["web", "web_beta"]:
+                    self.updaters[name] = WebClientDeploy(cfg, self.cmd_helper)
+                elif client_type in ["git_repo", "zip", "zip_beta"]:
+                    path = os.path.expanduser(cfg.get('path'))
+                    dclass = get_deploy_class(path)
+                    self.updaters[name] = dclass(cfg, self.cmd_helper)
+                else:
+                    self.server.add_warning(
+                        f"Invalid type '{client_type}' for section [{section}]")
+            except Exception as e:
+                self.server.add_warning(
+                    f"[update_manager]: Failed to load extension {name}: {e}"
+                )
 
         self.cmd_request_lock = asyncio.Lock()
         self.klippy_identified_evt: Optional[asyncio.Event] = None
@@ -212,14 +200,12 @@ class UpdateManager:
         db: DBComp = self.server.lookup_component('database')
         db.insert_item("moonraker", "update_manager.klipper_path", kpath)
         db.insert_item("moonraker", "update_manager.klipper_exec", executable)
+        kcfg = self.app_config["klipper"]
+        kcfg.set_option("path", kpath)
+        kcfg.set_option("env", executable)
         need_notification = not isinstance(kupdater, AppDeploy)
-        self.updaters['klipper'] = get_deploy_class(kpath)(
-            self.app_config[f"update_manager klipper"], self.cmd_helper,
-            {
-                'channel': self.channel,
-                'path': kpath,
-                'executable': executable
-            })
+        kclass = get_deploy_class(kpath)
+        self.updaters['klipper'] = kclass(kcfg, self.cmd_helper)
         async with self.cmd_request_lock:
             umdb = self.cmd_helper.get_umdb()
             await umdb.pop('klipper', None)
@@ -302,8 +288,7 @@ class UpdateManager:
                                           ) -> str:
         async with self.cmd_request_lock:
             app_name = ""
-            self.cmd_helper.set_update_info('full', id(web_request),
-                                            full_complete=False)
+            self.cmd_helper.set_update_info('full', id(web_request))
             self.cmd_helper.notify_update_response(
                 "Preparing full software update...")
             try:
@@ -325,10 +310,13 @@ class UpdateManager:
                 kupdater = self.updaters.get('klipper')
                 if isinstance(kupdater, AppDeploy):
                     self.klippy_identified_evt = asyncio.Event()
-                    klippy_updated = True
+                    check_restart = True
                     if not await self._check_need_reinstall(app_name):
-                        klippy_updated = await kupdater.update()
-                    if klippy_updated:
+                        check_restart = await kupdater.update()
+                    if self.cmd_helper.needs_service_restart(app_name):
+                        await kupdater.restart_service()
+                        check_restart = True
+                    if check_restart:
                         self.cmd_helper.notify_update_response(
                             "Waiting for Klippy to reconnect (this may take"
                             " up to 2 minutes)...")
@@ -345,8 +333,11 @@ class UpdateManager:
 
                 # Update Moonraker
                 app_name = 'moonraker'
+                moon_updater = cast(AppDeploy, self.updaters["moonraker"])
                 if not await self._check_need_reinstall(app_name):
-                    await self.updaters['moonraker'].update()
+                    await moon_updater.update()
+                if self.cmd_helper.needs_service_restart(app_name):
+                    await moon_updater.restart_service()
                 self.cmd_helper.set_full_complete(True)
                 self.cmd_helper.notify_update_response(
                     "Full Update Complete", is_complete=True)
@@ -489,7 +480,9 @@ class CommandHelper:
         # Update In Progress Tracking
         self.cur_update_app: Optional[str] = None
         self.cur_update_id: Optional[int] = None
+        self.full_update: bool = False
         self.full_complete: bool = False
+        self.pending_service_restarts: Set[str] = set()
 
     def get_server(self) -> Server:
         return self.server
@@ -506,21 +499,34 @@ class CommandHelper:
     def is_debug_enabled(self) -> bool:
         return self.debug_enabled
 
-    def set_update_info(self,
-                        app: str,
-                        uid: int,
-                        full_complete: bool = True
-                        ) -> None:
+    def set_update_info(self, app: str, uid: int) -> None:
         self.cur_update_app = app
         self.cur_update_id = uid
-        self.full_complete = full_complete
+        self.full_update = app == "full"
+        self.full_complete = not self.full_update
+        self.pending_service_restarts.clear()
+
+    def is_full_update(self) -> bool:
+        return self.full_update
+
+    def add_pending_restart(self, svc_name: str) -> None:
+        self.pending_service_restarts.add(svc_name)
+
+    def remove_pending_restart(self, svc_name: str) -> None:
+        if svc_name in self.pending_service_restarts:
+            self.pending_service_restarts.remove(svc_name)
 
     def set_full_complete(self, complete: bool = False):
         self.full_complete = complete
 
     def clear_update_info(self) -> None:
         self.cur_update_app = self.cur_update_id = None
+        self.full_update = False
         self.full_complete = False
+        self.pending_service_restarts.clear()
+
+    def needs_service_restart(self, svc_name: str) -> bool:
+        return svc_name in self.pending_service_restarts
 
     def is_app_updating(self, app_name: str) -> bool:
         return self.cur_update_app == app_name
@@ -570,7 +576,9 @@ class CommandHelper:
         resp = resp.strip()
         if isinstance(resp, bytes):
             resp = resp.decode()
-        done = is_complete and self.full_complete
+        done = is_complete
+        if self.full_update:
+            done &= self.full_complete
         notification = {
             'message': resp,
             'application': self.cur_update_app,
@@ -1117,7 +1125,20 @@ class WebClientDeploy(BaseDeploy):
         self.owner = self.repo.split("/", 1)[0]
         self.path = pathlib.Path(config.get("path")).expanduser().resolve()
         self.type = config.get('type')
-        self.channel = "stable" if self.type == "web" else "beta"
+        def_channel = "stable"
+        if self.type == "web_beta":
+            def_channel = "beta"
+            self.server.add_warning(
+                f"Config Section [{config.get_name()}], option 'type': "
+                "web_beta', value 'web_beta' is deprecated.  Set 'type' to "
+                "web and 'channel' to 'beta'")
+            self.type = "zip"
+        self.channel = config.get("channel", def_channel)
+        if self.channel not in ["stable", "beta"]:
+            raise config.error(
+                f"Invalid Channel '{self.channel}' for config "
+                f"section [{config.get_name()}], type: {self.type}. "
+                f"Must be one of the following: stable, beta")
         self.info_tags: List[str] = config.getlist("info_tags", [])
         self.persistent_files: List[str] = []
         pfiles = config.getlist('persistent_files', None)

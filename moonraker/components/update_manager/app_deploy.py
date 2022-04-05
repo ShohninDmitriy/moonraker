@@ -8,7 +8,7 @@ from __future__ import annotations
 import pathlib
 import shutil
 import hashlib
-import json
+import logging
 from .base_deploy import BaseDeploy
 
 # Annotation imports
@@ -25,10 +25,9 @@ if TYPE_CHECKING:
     from .update_manager import CommandHelper
     from ..machine import Machine
 
-CHANNEL_TO_TYPE = {
-    "stable": "zip",
-    "beta": "zip_beta",
-    "dev": "git_repo"
+SUPPORTED_CHANNELS = {
+    "zip": ["stable", "beta"],
+    "git_repo": ["dev", "beta"]
 }
 TYPE_TO_CHANNEL = {
     "zip": "stable",
@@ -37,33 +36,34 @@ TYPE_TO_CHANNEL = {
 }
 
 class AppDeploy(BaseDeploy):
-    def __init__(self,
-                 config: ConfigHelper,
-                 cmd_helper: CommandHelper,
-                 app_params: Optional[Dict[str, Any]]
-                 ) -> None:
+    def __init__(self, config: ConfigHelper, cmd_helper: CommandHelper) -> None:
+        super().__init__(config, cmd_helper, prefix="Application")
         self.config = config
-        self.app_params = app_params
-        cfg_hash = self._calc_config_hash()
-        super().__init__(config, cmd_helper, prefix="Application",
-                         cfg_hash=cfg_hash)
         self.debug = self.cmd_helper.is_debug_enabled()
-        if app_params is not None:
-            self.channel: str = app_params['channel']
-            self.path: pathlib.Path = pathlib.Path(
-                app_params['path']).expanduser().resolve()
-            executable: Optional[str] = app_params['executable']
-            self.type = CHANNEL_TO_TYPE[self.channel]
-        else:
-            self.type = config.get('type')
-            self.channel = TYPE_TO_CHANNEL[self.type]
-            self.path = pathlib.Path(
-                config.get('path')).expanduser().resolve()
-            executable = config.get('env', None)
-        if self.channel not in CHANNEL_TO_TYPE.keys():
+        type_choices = list(TYPE_TO_CHANNEL.keys())
+        self.type = config.get('type').lower()
+        if self.type not in type_choices:
+            raise config.error(
+                f"Config Error: Section [{config.get_name()}], Option "
+                f"'type: {self.type}': value must be one "
+                f"of the following choices: {type_choices}"
+            )
+        self.channel = config.get(
+            "channel", TYPE_TO_CHANNEL[self.type]
+        )
+        if self.type == "zip_beta":
+            self.server.add_warning(
+                f"Config Section [{config.get_name()}], Option 'type: "
+                "zip_beta', value 'zip_beta' is deprecated.  Set 'type' "
+                "to zip and 'channel' to 'beta'")
+            self.type = "zip"
+        self.path = pathlib.Path(
+            config.get('path')).expanduser().resolve()
+        executable = config.get('env', None)
+        if self.channel not in SUPPORTED_CHANNELS[self.type]:
             raise config.error(
                 f"Invalid Channel '{self.channel}' for config "
-                f"section [{config.get_name()}]")
+                f"section [{config.get_name()}], type: {self.type}")
         self._verify_path(config, 'path', self.path)
         self.executable: Optional[pathlib.Path] = None
         self.pip_exe: Optional[pathlib.Path] = None
@@ -79,8 +79,29 @@ class AppDeploy(BaseDeploy):
             self.venv_args = config.get('venv_args', None)
 
         self.info_tags: List[str] = config.getlist("info_tags", [])
-        self.is_service = config.getboolean("is_system_service", True)
-
+        self.managed_services: List[str] = []
+        svc_default = []
+        if config.getboolean("is_system_service", True):
+            svc_default.append(self.name)
+        svc_choices = [self.name, "klipper", "moonraker"]
+        services: List[str] = config.getlist(
+            "managed_services", svc_default, separator=None
+        )
+        for svc in services:
+            if svc not in svc_choices:
+                raw = " ".join(services)
+                self.server.add_warning(
+                    f"[{config.get_name()}]: Option 'restart_action: {raw}' "
+                    f"contains an invalid value '{svc}'.  All values must be "
+                    f"one of the following choices: {svc_choices}"
+                )
+                break
+        for svc in svc_choices:
+            if svc in services and svc not in self.managed_services:
+                self.managed_services.append(svc)
+        logging.debug(
+            f"Extension {self.name} managed services: {self.managed_services}"
+        )
         # We need to fetch all potential options for an Application.  Not
         # all options apply to each subtype, however we can't limit the
         # options in children if we want to switch between channels and
@@ -113,15 +134,6 @@ class AppDeploy(BaseDeploy):
         self.need_channel_update = storage.get('need_channel_upate', False)
         self._is_valid = storage.get('is_valid', False)
         return storage
-
-    def _calc_config_hash(self) -> str:
-        cfg_hash = self.config.get_hash()
-        if self.app_params is None:
-            return cfg_hash.hexdigest()
-        else:
-            app_bytes = json.dumps(self.app_params).encode()
-            cfg_hash.update(app_bytes)
-            return cfg_hash.hexdigest()
 
     def _verify_path(self,
                      config: ConfigHelper,
@@ -167,25 +179,30 @@ class AppDeploy(BaseDeploy):
         raise NotImplementedError
 
     async def restart_service(self):
-        if not self.is_service:
-            self.notify_status(
-                "Application not configured as service, skipping restart")
+        if not self.managed_services:
             return
-        if self.name == "moonraker":
-            # Launch restart async so the request can return
-            # before the server restarts
-            event_loop = self.server.get_event_loop()
-            event_loop.delay_callback(.1, self._do_restart)
-        else:
-            await self._do_restart()
+        is_full = self.cmd_helper.is_full_update()
+        for svc in self.managed_services:
+            if is_full and svc != self.name:
+                self.notify_status(f"Service {svc} restart postponed...")
+                self.cmd_helper.add_pending_restart(svc)
+                continue
+            self.cmd_helper.remove_pending_restart(svc)
+            self.notify_status(f"Restarting service {svc}...")
+            if svc == "moonraker":
+                # Launch restart async so the request can return
+                # before the server restarts
+                event_loop = self.server.get_event_loop()
+                event_loop.delay_callback(.1, self._do_restart, svc)
+            else:
+                await self._do_restart(svc)
 
-    async def _do_restart(self) -> None:
-        self.notify_status("Restarting Service...")
+    async def _do_restart(self, svc_name: str) -> None:
         machine: Machine = self.server.lookup_component("machine")
         try:
-            await machine.do_service_action("restart", self.name)
+            await machine.do_service_action("restart", svc_name)
         except Exception:
-            if self.name == "moonraker":
+            if svc_name == "moonraker":
                 # We will always get an error when restarting moonraker
                 # from within the child process, so ignore it
                 return
