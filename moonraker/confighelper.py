@@ -8,9 +8,8 @@ from __future__ import annotations
 import configparser
 import os
 import hashlib
-import shutil
-import filecmp
 import pathlib
+import re
 import logging
 from utils import SentinelClass
 
@@ -21,6 +20,7 @@ from typing import (
     Callable,
     IO,
     Optional,
+    Set,
     Tuple,
     TypeVar,
     Union,
@@ -32,10 +32,12 @@ if TYPE_CHECKING:
     from moonraker import Server
     from components.gpio import GpioFactory, GpioOutputPin
     from components.template import TemplateFactory, JinjaTemplate
+    from io import TextIOWrapper
     _T = TypeVar("_T")
     ConfigVal = Union[None, int, float, bool, str, dict, list]
 
 SENTINEL = SentinelClass.get_instance()
+DOCS_URL = "https://moonraker.readthedocs.io/en/latest"
 
 class ConfigError(Exception):
     pass
@@ -47,16 +49,18 @@ class ConfigHelper:
                  server: Server,
                  config: configparser.ConfigParser,
                  section: str,
-                 orig_sects: List[str],
-                 parsed: Dict[str, Dict[str, ConfigVal]] = {}
+                 parsed: Dict[str, Dict[str, ConfigVal]],
+                 file_section_map: Dict[str, List[str]],
+                 fallback_section: Optional[str] = None
                  ) -> None:
         self.server = server
         self.config = config
         self.section = section
-        self.orig_sections = orig_sects
+        self.fallback_section: Optional[str] = fallback_section
         self.parsed = parsed
         if self.section not in self.parsed:
             self.parsed[self.section] = {}
+        self.file_section_map = file_section_map
         self.sections = config.sections
         self.has_section = config.has_section
 
@@ -78,12 +82,23 @@ class ConfigHelper:
     def get_name(self) -> str:
         return self.section
 
+    def get_file(self) -> Optional[pathlib.Path]:
+        for fname in reversed(self.file_section_map.keys()):
+            if self.section in self.file_section_map[fname]:
+                return pathlib.Path(fname)
+        return None
+
     def get_options(self) -> Dict[str, str]:
+        if self.section not in self.config:
+            return {}
         return dict(self.config[self.section])
 
     def get_hash(self) -> hashlib._Hash:
         hash = hashlib.sha256()
-        for option, val in self.config[self.section].items():
+        section = self.section
+        if self.section not in self.config:
+            return hash
+        for option, val in self.config[section].items():
             hash.update(option.encode())
             hash.update(val.encode())
         return hash
@@ -91,11 +106,13 @@ class ConfigHelper:
     def get_prefix_sections(self, prefix: str) -> List[str]:
         return [s for s in self.sections() if s.startswith(prefix)]
 
-    def getsection(self, section: str) -> ConfigHelper:
-        if section not in self.config:
-            raise ConfigError(f"No section [{section}] in config")
-        return ConfigHelper(self.server, self.config, section,
-                            self.orig_sections, self.parsed)
+    def getsection(
+        self, section: str, fallback: Optional[str] = None
+    ) -> ConfigHelper:
+        return ConfigHelper(
+            self.server, self.config, section, self.parsed,
+            self.file_section_map, fallback
+        )
 
     def _get_option(self,
                     func: Callable[..., Any],
@@ -107,14 +124,21 @@ class ConfigHelper:
                     maxval: Optional[Union[int, float]] = None,
                     deprecate: bool = False
                     ) -> _T:
+        section = self.section
+        warn_fallback = False
+        if (
+            self.section not in self.config and
+            self.fallback_section is not None
+        ):
+            section = self.fallback_section
+            warn_fallback = True
         try:
-            val = func(self.section, option)
-        except configparser.NoOptionError:
+            val = func(section, option)
+        except (configparser.NoOptionError, configparser.NoSectionError) as e:
             if isinstance(default, SentinelClass):
-                raise ConfigError(
-                    f"No option found ({option}) in section [{self.section}]"
-                ) from None
+                raise ConfigError(str(e)) from None
             val = default
+            section = self.section
         except Exception:
             raise ConfigError(
                 f"Error parsing option ({option}) from "
@@ -122,20 +146,25 @@ class ConfigHelper:
         else:
             if deprecate:
                 self.server.add_warning(
-                    f"[{self.section}]: Option '{option}' in is "
+                    f"[{self.section}]: Option '{option}' is "
                     "deprecated, see the configuration documention "
-                    "at https://moonraker.readthedocs.io")
+                    f"at {DOCS_URL}/configuration")
+            if warn_fallback:
+                self.server.add_warning(
+                    f"[{section}]: Option '{option}' has been moved "
+                    f"to section [{self.section}].  Please correct your "
+                    f"configuration, see {DOCS_URL}/configuration for "
+                    f"detailed documentation."
+                )
             self._check_option(option, val, above, below, minval, maxval)
-        if self.section in self.orig_sections:
-            # Only track sections included in the original config
-            if (
-                val is None or
-                isinstance(val, (int, float, bool, str, dict, list))
-            ):
-                self.parsed[self.section][option] = val
-            else:
-                # If the item cannot be encoded to json serialize to a string
-                self.parsed[self.section][option] = str(val)
+        if (
+            val is None or
+            isinstance(val, (int, float, bool, str, dict, list))
+        ):
+            self.parsed[section][option] = val
+        else:
+            # If the item cannot be encoded to json serialize to a string
+            self.parsed[section][option] = str(val)
         return val
 
     def _check_option(self,
@@ -383,7 +412,7 @@ class ConfigHelper:
         except Exception:
             raise ConfigError("Error Reading Object")
         sections = sup_cfg.sections()
-        return ConfigHelper(self.server, sup_cfg, sections[0], sections)
+        return ConfigHelper(self.server, sup_cfg, sections[0], {}, {})
 
     def read_supplemental_config(self, file_name: str) -> ConfigHelper:
         cfg_file_path = os.path.normpath(os.path.expanduser(file_name))
@@ -396,7 +425,7 @@ class ConfigHelper:
         except Exception:
             raise ConfigError(f"Error Reading Config: '{cfg_file_path}'")
         sections = sup_cfg.sections()
-        return ConfigHelper(self.server, sup_cfg, sections[0], sections)
+        return ConfigHelper(self.server, sup_cfg, sections[0], {}, {})
 
     def write_config(self, file_obj: IO[str]) -> None:
         self.config.write(file_obj)
@@ -404,8 +433,19 @@ class ConfigHelper:
     def get_parsed_config(self) -> Dict[str, Dict[str, ConfigVal]]:
         return dict(self.parsed)
 
+    def get_orig_config(self) -> Dict[str, Dict[str, str]]:
+        return {
+            key: dict(val) for key, val in self.config.items()
+        }
+
+    def get_file_sections(self) -> Dict[str, List[str]]:
+        return dict(self.file_section_map)
+
+    def get_config_files(self) -> List[str]:
+        return list(self.file_section_map.keys())
+
     def validate_config(self) -> None:
-        for sect in self.orig_sections:
+        for sect in self.config.sections():
             if sect not in self.parsed:
                 self.server.add_warning(
                     f"Unparsed config section [{sect}] detected.  This "
@@ -423,39 +463,91 @@ class ConfigHelper:
                         "failed to load.  In the future this will result "
                         "in a startup error.")
 
-def get_configuration(server: Server,
-                      app_args: Dict[str, Any]
-                      ) -> ConfigHelper:
-    cfg_file_path: str = os.path.normpath(os.path.expanduser(
-        app_args['config_file']))
+    def create_backup(self):
+        cfg_path = self.server.get_app_args()["config_file"]
+        cfg = pathlib.Path(cfg_path).expanduser().resolve()
+        backup = cfg.parent.joinpath(f".{cfg.name}.bkp")
+        backup_fp: Optional[TextIOWrapper] = None
+        try:
+            if backup.exists():
+                cfg_mtime: int = 0
+                for cfg_fname in set(self.file_section_map.keys()):
+                    cfg = pathlib.Path(cfg_fname)
+                    cfg_mtime = max(cfg_mtime, cfg.stat().st_mtime_ns)
+                backup_mtime = backup.stat().st_mtime_ns
+                if backup_mtime >= cfg_mtime:
+                    # Backup already exists and is current
+                    return
+            backup_fp = backup.open("w")
+            self.config.write(backup_fp)
+            logging.info(f"Backing up last working configuration to '{backup}'")
+        except Exception:
+            logging.exception("Failed to create a backup")
+        finally:
+            if backup_fp is not None:
+                backup_fp.close()
+
+def get_configuration(
+    server: Server, app_args: Dict[str, Any]
+) -> ConfigHelper:
     config = configparser.ConfigParser(interpolation=None)
-    try:
-        config.read_file(open(cfg_file_path))
-    except Exception as e:
-        if not os.path.isfile(cfg_file_path):
-            raise ConfigError(
-                f"Configuration File Not Found: '{cfg_file_path}''") from e
-        if not os.access(cfg_file_path, os.R_OK | os.W_OK):
-            raise ConfigError(
-                "Moonraker does not have Read/Write permission for "
-                f"config file at path '{cfg_file_path}'") from e
-        raise ConfigError(f"Error Reading Config: '{cfg_file_path}'") from e
+    section_map = parse_config_file(config, app_args)
     if not config.has_section('server'):
         raise ConfigError("No section [server] in config")
-    orig_sections = config.sections()
-    return ConfigHelper(server, config, 'server', orig_sections)
+    return ConfigHelper(server, config, 'server', {}, section_map)
 
-def backup_config(cfg_path: str) -> None:
-    cfg = pathlib.Path(cfg_path).expanduser().resolve()
-    backup = cfg.parent.joinpath(f".{cfg.name}.bkp")
-    try:
-        if backup.exists() and filecmp.cmp(cfg, backup):
-            # Backup already exists and is current
-            return
-        shutil.copy2(cfg, backup)
-        logging.info(f"Backing up last working configuration to '{backup}'")
-    except Exception:
-        logging.exception("Failed to create a backup")
+def parse_config_file(
+    config: configparser.ConfigParser, app_args: Dict[str, Any]
+) -> Dict[str, List[str]]:
+    start_path = pathlib.Path(app_args['config_file']).expanduser().resolve()
+    config_files: List[pathlib.Path] = [start_path]
+    visited_files: Set[Tuple[int, int]] = set()
+    file_sections: Dict[str, List[str]] = {}
+    while config_files:
+        config_path = config_files.pop(0)
+        try:
+            stat = config_path.stat()
+            visited = (stat.st_dev, stat.st_ino)
+            if visited in visited_files:
+                raise ConfigError("Recursive include directive detected")
+            visited_files.add(visited)
+            data = config_path.read_text()
+            config.read_string(data)
+        except Exception as e:
+            if not config_path.is_file():
+                raise ConfigError(
+                    f"Configuration File Not Found: '{config_path}''") from e
+            if not os.access(config_path, os.R_OK):
+                raise ConfigError(
+                    "Moonraker does not have Read/Write permission for "
+                    f"config file at path '{config_path}'") from e
+            raise ConfigError(f"Error Reading Config: '{config_path}'") from e
+        all_sections: List[str] = re.findall(
+            r"^\[([^]]+)\]\s*$", data, flags=re.MULTILINE
+        )
+        file_sections[str(config_path)] = [
+            sec for sec in all_sections if not sec.startswith("include")
+        ]
+        for sec in config.sections():
+            if not sec.startswith("include"):
+                continue
+            str_path = sec[8:].strip()
+            if not str_path:
+                raise ConfigError(
+                    f"Invalid include directive: [{sec}]"
+                )
+            config.remove_section(sec)
+            if str_path[0] == "/":
+                path = pathlib.Path(str_path)
+                paths = sorted(path.parent.glob(path.name))
+            else:
+                paths = sorted(config_path.parent.glob(str_path))
+            if not paths:
+                raise ConfigError(
+                    f"No files matching include directive [{sec}]"
+                )
+            config_files.extend(paths)
+    return file_sections
 
 def find_config_backup(cfg_path: str) -> Optional[str]:
     cfg = pathlib.Path(cfg_path).expanduser().resolve()
