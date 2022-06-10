@@ -1900,10 +1900,17 @@ Content-Type: application/json
 
 {
     "username": "my_user",
-    "password": "my_password"
+    "password": "my_password",
+    "source": "moonraker"
 }
 ```
 JSON-RPC request: Not Available
+
+Arguments:
+- `username`: The user login name.  This argument is required.
+- `password`: The user password. This arugment is required.
+- `source`:  The authentication source.  Can be `moonraker` or `ldap`. The
+  default is `moonraker`.
 
 Returns: An object the logged in username, auth token, refresh token,
 and action summary:
@@ -1912,7 +1919,8 @@ and action summary:
     "username": "my_user",
     "token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY4MDAuNDgxNjU1LCAiZXhwIjogMTYxODg4MDQwMC40ODE2NTUsICJ1c2VybmFtZSI6ICJteV91c2VyIiwgInRva2VuX3R5cGUiOiAiYXV0aCJ9.QdieeEskrU0FrH7rXKuPDSZxscM54kV_vH60uJqdU9g",
     "refresh_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiTW9vbnJha2VyIiwgImlhdCI6IDE2MTg4NzY4MDAuNDgxNzUxNCwgImV4cCI6IDE2MjY2NTI4MDAuNDgxNzUxNCwgInVzZXJuYW1lIjogIm15X3VzZXIiLCAidG9rZW5fdHlwZSI6ICJyZWZyZXNoIn0.btJF0LJfymInhGJQ2xvPwkp2dFUqwgcw4OA_wE-EcCM",
-    "action": "user_logged_in"
+    "action": "user_logged_in",
+    "source": "moonraker"
 }
 ```
 - The `token` field is a JSON Web Token used to authorize the user.  It should
@@ -1924,7 +1932,7 @@ and action summary:
 
 !!! Note
     This endpoint may be accessed by unauthorized clients.  A 401 would
-    only be returned if the username and/or password is invalid.
+    only be returned if the authentication failed.
 
 #### Logout Current User
 HTTP Request:
@@ -1967,15 +1975,15 @@ Content-Type: application/json
 
 {
     "username": "my_user",
-    "password": "my_password",
-    "source": "moonraker",
+    "password": "my_password"
 }
 ```
 JSON-RPC request: Not Available
 
 Returns: An object containing the created user name, an auth token,
-a refresh token, the source, and an action summary.  Creating a user also effectively
-logs the user in.
+a refresh token, the source, and an action summary.  Creating a user also
+effectively logs the user in.
+
 ```json
 {
     "username": "my_user",

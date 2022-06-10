@@ -32,23 +32,14 @@ from typing import (
     Dict,
     List,
 )
-from bonsai import (
-    LDAPClient,
-    LDAPSearchScope
-)
-from bonsai.errors import (
-    ConnectionError,
-    AuthenticationError,
-    TimeoutError,
-)
 
 if TYPE_CHECKING:
     from confighelper import ConfigHelper
     from websockets import WebRequest
     from tornado.httputil import HTTPServerRequest
     from tornado.web import RequestHandler
-    from . import database
-    DBComp = database.MoonrakerDatabase
+    from .database import MoonrakerDatabase as DBComp
+    from .ldap import MoonrakerLDAP
     IPAddr = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
     IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
     OneshotToken = Tuple[IPAddr, Optional[Dict[str, Any]], asyncio.Handle]
@@ -68,6 +59,7 @@ ONESHOT_TIMEOUT = 5
 TRUSTED_CONNECTION_TIMEOUT = 3600
 PRUNE_CHECK_TIME = 300.
 
+AUTH_SOURCES = ["moonraker", "ldap"]
 HASH_ITER = 100000
 API_USER = "_API_KEY_USER_"
 TRUSTED_USER = "_TRUSTED_USER_"
@@ -83,24 +75,20 @@ class Authorization:
         self.server = config.get_server()
         self.login_timeout = config.getint('login_timeout', 90)
         self.force_logins = config.getboolean('force_logins', False)
-        self.ldap_server = config.get('ldap_server', None)
-        self.ldap_base_dn = config.get('ldap_base_dn', None)
-        self.ldap_group_dn = config.get('ldap_group_dn', None)
-        self.ldap_type_ad = config.getboolean('ldap_type_ad', False)
-        self.ldap_secure = config.getboolean('ldap_secure', False)
-
-        ldap_bind_dn_template = config.gettemplate('ldap_bind_dn', None)
-        self.ldap_bind_dn: Optional[str] = None
-        if ldap_bind_dn_template is not None:
-            self.ldap_bind_dn = ldap_bind_dn_template.render()
-
-        ldap_bind_password_template = config.gettemplate('ldap_bind_password',
-                                                         None)
-        self.ldap_bind_password: Optional[str] = None
-        if ldap_bind_password_template is not None:
-            self.ldap_bind_password = ldap_bind_password_template.render()
-
-        self.default_source = config.get('default_source', "moonraker")
+        self.default_source = config.get('default_source', "moonraker").lower()
+        if self.default_source not in AUTH_SOURCES:
+            raise config.error(
+                "[authorization]: option 'default_source' - Invalid "
+                f"value '{self.default_source}'"
+            )
+        self.ldap: Optional[MoonrakerLDAP] = None
+        if config.has_section("ldap"):
+            self.ldap = self.server.load_component(config, "ldap", None)
+        if self.default_source == "ldap" and self.ldap is None:
+            self.server.add_warning(
+                "[authorization]: Option 'default_source' set to 'ldap',"
+                " however [ldap] section failed to load or not configured"
+            )
         database: DBComp = self.server.lookup_component('database')
         database.register_local_namespace('authorized_users', forbidden=True)
         self.user_db = database.wrap_namespace('authorized_users')
@@ -316,8 +304,7 @@ class Authorization:
         return {
             'username': username,
             'token': token,
-            'source': '%s' % (user_info['source'] if 'source' in user_info
-                              else "moonraker"),
+            'source': user_info.get("source", "moonraker"),
             'action': 'user_jwt_refresh'
         }
 
@@ -336,8 +323,7 @@ class Authorization:
             else:
                 return {
                     'username': user['username'],
-                    'source': '%s' % (user['source'] if 'source' in user
-                                      else "moonraker"),
+                    'source': user.get("source", "moonraker"),
                     'created_on': user.get('created_on')
                 }
         elif action == "POST":
@@ -357,8 +343,7 @@ class Authorization:
                 continue
             user_list.append({
                 'username': user['username'],
-                'source': '%s' % (user['source'] if 'source' in user
-                                  else "moonraker"),
+                'source': user.get("source", "moonraker"),
                 'created_on': user['created_on']
             })
         return {
@@ -374,7 +359,7 @@ class Authorization:
         if user_info is None:
             raise self.server.error("No Current User")
         username = user_info['username']
-        if user_info['source'] == "ldap":
+        if user_info.get("source", "moonraker") == "ldap":
             raise self.server.error(
                 f"Can´t Reset password for ldap user {username}")
         if username in RESERVED_USERS:
@@ -394,62 +379,28 @@ class Authorization:
             'action': "user_password_reset"
         }
 
-    async def _login_ldap_user(self, username, password) -> bool:
-        if self.ldap_server is None or self.ldap_base_dn is None \
-                or self.ldap_group_dn is None \
-                or self.ldap_bind_password is None \
-                or self.ldap_bind_dn is None:
-            raise self.server.error(
-                "ldap: Configuration is not given", 401
-            )
-        base_dn = str(self.ldap_base_dn)
-        client = LDAPClient(self._generate_ldap_url_(str(self.ldap_server)))
-        client.set_credentials("SIMPLE", self.ldap_bind_dn,
-                               self.ldap_bind_password)
-        client.set_cert_policy("allow")
-        bind_success = False
-        try:
-            async with client.connect(is_async=True, timeout=10) as conn:
-                ldap_filter = ("(&(objectClass=Person)(%s=" + '%s))') % \
-                              ("sAMAccountName"
-                               if self.ldap_type_ad
-                               else "uid",
-                               username)
-                user = await conn.search(
-                    base_dn,
-                    LDAPSearchScope.SUBTREE,
-                    ldap_filter,
-                    ['memberOf']
-                )
-                auth_username = str(user[0]["DN"])
-                client.set_credentials("SIMPLE", auth_username, password)
-                bind_success = True
-            async with client.connect(is_async=True, timeout=10):
-                if self.ldap_group_dn is None:
-                    return True
-                if len(user[0]['memberOf']) > 0:
-                    for group in user[0]['memberOf']:
-                        if str(group) == str(self.ldap_group_dn):
-                            return True
-        except (ConnectionError, AuthenticationError, TimeoutError):
-            if not bind_success:
-                raise self.server.error("ldap: bind error", 401)
-        raise self.server.error("ldap: Invalid Username or Password",
-                                401)
-
-    async def _login_jwt_user(self,
-                              web_request: WebRequest,
-                              create: bool = False
-                              ) -> Dict[str, Any]:
+    async def _login_jwt_user(
+        self, web_request: WebRequest, create: bool = False
+    ) -> Dict[str, Any]:
         username: str = web_request.get_str('username')
         password: str = web_request.get_str('password')
-        source: str = web_request.get_str('source', self.default_source).lower()
+        source: str = web_request.get_str(
+            'source', self.default_source
+        ).lower()
+        if source not in AUTH_SOURCES:
+            raise self.server.error(f"Invalid 'source': {source}")
         user_info: Dict[str, Any]
         if username in RESERVED_USERS:
             raise self.server.error(
                 f"Invalid Request for user {username}")
-        if source == "ldap" and not create:
-            await self._login_ldap_user(username, password)
+        if source == "ldap":
+            if create:
+                raise self.server.error("Cannot Create LDAP User")
+            if self.ldap is None:
+                raise self.server.error(
+                    "LDAP authentication not available", 401
+                )
+            await self.ldap.authenticate_ldap_user(username, password)
             if username not in self.users:
                 create = True
         if create:
@@ -469,11 +420,19 @@ class Authorization:
             self._sync_user(username)
             action = "user_created"
             if source == "ldap":
+                # Dont notify user created
                 action = "user_logged_in"
+                create = False
         else:
             if username not in self.users:
                 raise self.server.error(f"Unregistered User: {username}")
             user_info = self.users[username]
+            auth_src = user_info.get("source", "moonraker")
+            if auth_src != source:
+                raise self.server.error(
+                    f"Moonraker cannot authenticate user '{username}', must "
+                    f"specify source '{auth_src}'", 401
+                )
             salt = bytes.fromhex(user_info['salt'])
             hashed_pass = hashlib.pbkdf2_hmac(
                 'sha256', password.encode(), salt, HASH_ITER).hex()
@@ -505,8 +464,7 @@ class Authorization:
         return {
             'username': username,
             'token': token,
-            'source': '%s' % (user_info['source'] if 'source' in user_info
-                              else "moonraker"),
+            'source': user_info.get("source", "moonraker"),
             'refresh_token': refresh_token,
             'action': action
         }
@@ -622,9 +580,6 @@ class Authorization:
             'use': "sig"
         }
 
-    def _generate_ldap_url_(self, url: str) -> str:
-        return "ldap%s://%s" % ("s" if self.ldap_secure else "", url)
-
     def _public_key_from_jwk(self, jwk: Dict[str, Any]) -> Verifier:
         if jwk.get('kty') != "OKP":
             raise self.server.error("Not an Octet Key Pair")
@@ -735,8 +690,10 @@ class Authorization:
     def check_authorized(self,
                          request: HTTPServerRequest
                          ) -> Optional[Dict[str, Any]]:
-        if request.path in self.permitted_paths \
-                or request.method == "OPTIONS":
+        if (
+            request.path in self.permitted_paths
+            or request.method == "OPTIONS"
+        ):
             return None
 
         # Check JSON Web Token
