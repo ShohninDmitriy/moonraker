@@ -52,7 +52,8 @@ class PrinterPower:
             "loxonev1": Loxonev1,
             "rf": RFDevice,
             "mqtt": MQTTDevice,
-            "smartthings": SmartThings
+            "smartthings": SmartThings,
+            "hue": HueDevice
         }
 
         for section in prefix_sections:
@@ -1285,6 +1286,35 @@ class MQTTDevice(PowerDevice):
             raise self.server.error(
                 f"MQTT Power Device {self.name}: Failed to set "
                 f"device to state '{state}'", 500)
+
+
+class HueDevice(HTTPDevice):
+
+    def __init__(self, config: ConfigHelper) -> None:
+        super().__init__(config)
+        self.device_id = config.get("device_id")
+
+    async def _send_power_request(self, state: str) -> str:
+        new_state = True if state == "on" else False
+        url = (
+            f"http://{self.addr}/api/{self.user}/lights/{self.device_id}/state"
+        )
+        url = self.client.escape_url(url)
+        ret = await self.client.request("PUT", url, body={"on": new_state})
+        resp = cast(List[Dict[str, Dict[str, Any]]], ret.json())
+        return (
+            "on" if resp[0]["success"][f"/lights/{self.device_id}/state/on"]
+            else "off"
+        )
+
+    async def _send_status_request(self) -> str:
+        url = (
+            f"http://{self.addr}/api/{self.user}/lights/{self.device_id}"
+        )
+        url = self.client.escape_url(url)
+        ret = await self.client.request("GET", url)
+        resp = cast(Dict[str, Dict[str, Any]], ret.json())
+        return "on" if resp["state"]["on"] else "off"
 
 
 # The power component has multiple configuration sections
