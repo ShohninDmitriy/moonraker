@@ -126,6 +126,12 @@ class SimplyPrint(Subscribable):
                     "Section [simplyprint], option 'power_device': Unable "
                     f"to locate configuration for power device {power_id}"
                 )
+        else:
+            power_pfx = config.get_prefix_sections("power ")
+            if len(power_pfx) == 1:
+                name = power_pfx[0][6:]
+                if "printer" in name.lower():
+                    self.power_id = name
         self.filament_sensor: str = ""
         fsensor = config.get("filament_sensor", None)
         fs_prefixes = ["filament_switch_sensor ", "filament_motion_sensor "]
@@ -1335,6 +1341,8 @@ class WebcamStream:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                if not self.server.is_debug_enabled():
+                    continue
                 if type(last_err) != type(e) or last_err.args != e.args:
                     last_err = e
                     cname = self.__class__.__name__
