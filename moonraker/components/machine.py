@@ -54,6 +54,11 @@ SD_MFGRS = {
 }
 IP_FAMILIES = {'inet': 'ipv4', 'inet6': 'ipv6'}
 NETWORK_UPDATE_SEQUENCE = 10
+SERVICE_PROPERTIES = [
+    "Requires", "After", "SupplementaryGroups", "EnvironmentFiles",
+    "ExecStart", "WorkingDirectory", "FragmentPath", "Description",
+    "User"
+]
 
 class Machine:
     def __init__(self, config: ConfigHelper) -> None:
@@ -63,6 +68,12 @@ class Machine:
         dist_info.update(distro.info())
         dist_info['release_info'] = distro.distro_release_info()
         self.inside_container = False
+        self.moonraker_service_info: Dict[str, Any] = {}
+        self._sudo_password: Optional[str] = None
+        sudo_template = config.gettemplate("sudo_password", None)
+        if sudo_template is not None:
+            self._sudo_password = sudo_template.render()
+        self._public_ip = ""
         self.system_info: Dict[str, Any] = {
             'python': {
                 "version": sys.version_info,
@@ -79,12 +90,12 @@ class Machine:
             "systemd_cli": SystemdCliProvider,
             "systemd_dbus": SystemdDbusProvider
         }
-        ptype = config.get('provider', 'systemd_dbus')
-        pclass = providers.get(ptype)
+        self.provider_type = config.get('provider', 'systemd_dbus')
+        pclass = providers.get(self.provider_type)
         if pclass is None:
-            raise config.error(f"Invalid Provider: {ptype}")
+            raise config.error(f"Invalid Provider: {self.provider_type}")
         self.sys_provider: BaseProvider = pclass(config)
-        logging.info(f"Using System Provider: {ptype}")
+        logging.info(f"Using System Provider: {self.provider_type}")
 
         self.server.register_endpoint(
             "/machine/reboot", ['POST'], self._handle_machine_request)
@@ -102,6 +113,11 @@ class Machine:
         self.server.register_endpoint(
             "/machine/system_info", ['GET'],
             self._handle_sysinfo_request)
+        self.server.register_endpoint(
+            "/machine/sudo", ["GET"], self._handle_sudo_check)
+        self.server.register_endpoint(
+            "/machine/sudo/password", ["POST"],
+            self._set_sudo_password)
 
         self.server.register_notification("machine:service_state_changed")
 
@@ -132,6 +148,22 @@ class Machine:
                     sys_info_msg += f"\n  {key}: {val}"
         self.server.add_log_rollover_item('system_info', sys_info_msg, log=log)
 
+    @property
+    def public_ip(self) -> str:
+        return self._public_ip
+
+    def get_system_provider(self):
+        return self.sys_provider
+
+    def is_inside_container(self):
+        return self.inside_container
+
+    def get_provider_type(self):
+        return self.provider_type
+
+    def get_moonraker_service_info(self):
+        return dict(self.moonraker_service_info)
+
     async def wait_for_init(self, timeout: float = None) -> None:
         try:
             await asyncio.wait_for(self.init_evt.wait(), timeout)
@@ -150,6 +182,11 @@ class Machine:
         avail_list = list(available_svcs.keys())
         self.system_info['available_services'] = avail_list
         self.system_info['service_state'] = available_svcs
+        svc_info = await self.sys_provider.extract_service_info(
+            "moonraker", os.getpid(), SERVICE_PROPERTIES
+        )
+        self.moonraker_service_info = svc_info
+        self.log_service_info(svc_info)
         self.init_evt.set()
 
     async def _handle_machine_request(self, web_request: WebRequest) -> str:
@@ -196,8 +233,48 @@ class Machine:
                                       ) -> Dict[str, Any]:
         return {'system_info': self.system_info}
 
+    async def _set_sudo_password(self, web_request: WebRequest) -> str:
+        self._sudo_password = web_request.get_str("password")
+        if not await self.check_sudo_access():
+            self._sudo_password = None
+            raise self.server.error("Invalid password, sudo access was denied")
+        self.server.send_event("machine:sudo_password_set")
+        return "ok"
+
+    async def _handle_sudo_check(
+        self, web_request: WebRequest
+    ) -> Dict[str, Any]:
+        has_sudo = await self.check_sudo_access()
+        return {"sudo_access": has_sudo}
+
     def get_system_info(self) -> Dict[str, Any]:
         return self.system_info
+
+    @property
+    def sudo_password(self) -> Optional[str]:
+        return self._sudo_password
+
+    async def check_sudo_access(self, cmds: List[str] = []) -> bool:
+        if not cmds:
+            cmds = ["systemctl --version", "ls /lost+found"]
+        shell_cmd: SCMDComp = self.server.lookup_component("shell_command")
+        for cmd in cmds:
+            try:
+                await self.exec_sudo_command(cmd)
+            except shell_cmd.error:
+                return False
+        return True
+
+    async def exec_sudo_command(self, command: str) -> str:
+        proc_input = None
+        full_cmd = f"sudo {command}"
+        if self._sudo_password is not None:
+            proc_input = self._sudo_password
+            full_cmd = f"sudo -S {command}"
+        shell_cmd: SCMDComp = self.server.lookup_component("shell_command")
+        return await shell_cmd.exec_cmd(
+            full_cmd, proc_input=proc_input, log_complete=False
+        )
 
     def _get_sdcard_info(self) -> Dict[str, Any]:
         sd_info: Dict[str, Any] = {}
@@ -383,8 +460,10 @@ class Machine:
             logging.exception("Error processing network update")
             return
         prev_network = self.system_info.get('network', {})
-        if notify and network != prev_network:
-            self.server.send_event("machine:net_state_changed", network)
+        if network != prev_network:
+            self._find_public_ip()
+            if notify:
+                self.server.send_event("machine:net_state_changed", network)
         self.system_info['network'] = network
 
     async def get_public_network(self) -> Dict[str, Any]:
@@ -409,7 +488,7 @@ class Machine:
                     continue
                 fam = addrinfo["family"]
                 addr = addrinfo["address"]
-                if fam == "ipv6" and src_ip is None:
+                if fam == "ipv6" and not src_ip:
                     ip = ipaddress.ip_address(addr)
                     if ip.is_global:
                         return {
@@ -429,7 +508,7 @@ class Machine:
             "family": ""
         }
 
-    def _find_public_ip(self) -> Optional[str]:
+    def _find_public_ip(self) -> str:
         #  Check for an IPv4 Source IP
         # NOTE: It should also be possible to extract this from
         # the routing table, ie: ip -json route
@@ -437,23 +516,28 @@ class Machine:
         # metric.  Might also be able to get IPv6 info from this.
         # However, it would be better to use NETLINK for this rather
         # than run another shell command
-        src_ip: Optional[str] = None
+        src_ip: str = ""
         # First attempt: use "broadcast" to find the local IP
-        addr_info = [("<broadcast>", 0, True), ("10.255.255.255", 1, False)]
-        for (addr, port, bcast) in addr_info:
-            s = socket.socket(
-                socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK
-            )
+        addr_info = [
+            ("<broadcast>", 0, socket.AF_INET),
+            ("10.255.255.255", 1, socket.AF_INET),
+            ("2001:db8::1234", 1, socket.AF_INET6),
+        ]
+        for (addr, port, fam) in addr_info:
+            s = socket.socket(fam, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
             try:
-                if bcast:
+                if addr == "<broadcast>":
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 s.connect((addr, port))
                 src_ip = s.getsockname()[0]
             except Exception:
                 continue
             logging.info(f"Detected Local IP: {src_ip}")
-            return src_ip
-        if src_ip is None:
+            break
+        if src_ip != self._public_ip:
+            self._public_ip = src_ip
+            self.server.send_event("machine:public_ip_changed", src_ip)
+        if not src_ip:
             logging.info("Failed to detect local IP address")
         return src_ip
 
@@ -472,6 +556,20 @@ class Machine:
                 wifi_intfs[parts[0]] = parts[1].split(":")[-1].strip('"')
         return wifi_intfs
 
+    def log_service_info(self, svc_info: Dict[str, Any]) -> None:
+        if not svc_info:
+            return
+        name = svc_info.get("unit_name", "unknown")
+        msg = f"\nSystemd unit {name}:"
+        for key, val in svc_info.items():
+            if key == "properties":
+                msg += "\nProperties:"
+                for prop_key, prop in val.items():
+                    msg += f"\n**{prop_key}={prop}"
+            else:
+                msg += f"\n{key}: {val}"
+        self.server.add_log_rollover_item(name, msg)
+
 class BaseProvider:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
@@ -482,11 +580,15 @@ class BaseProvider:
     async def initialize(self) -> None:
         pass
 
+    async def _exec_sudo_command(self, command: str):
+        machine: Machine = self.server.lookup_component("machine")
+        return await machine.exec_sudo_command(command)
+
     async def shutdown(self) -> None:
-        await self.shell_cmd.exec_cmd(f"sudo shutdown now")
+        await self._exec_sudo_command(f"shutdown now")
 
     async def reboot(self) -> None:
-        await self.shell_cmd.exec_cmd(f"sudo shutdown -r now")
+        await self._exec_sudo_command(f"shutdown -r now")
 
     async def do_service_action(self,
                                 action: str,
@@ -506,6 +608,11 @@ class BaseProvider:
     def get_available_services(self) -> Dict[str, Dict[str, str]]:
         return self.available_services
 
+    async def extract_service_info(
+        self, service: str, pid: int, properties: List[str], raw: bool = False
+    ) -> Dict[str, Any]:
+        return {}
+
 class SystemdCliProvider(BaseProvider):
     async def initialize(self) -> None:
         await self._detect_active_services()
@@ -522,8 +629,7 @@ class SystemdCliProvider(BaseProvider):
                                 action: str,
                                 service_name: str
                                 ) -> None:
-        await self.shell_cmd.exec_cmd(
-            f'sudo systemctl {action} {service_name}')
+        await self._exec_sudo_command(f"systemctl {action} {service_name}")
 
     async def check_virt_status(self) -> Dict[str, Any]:
         # Fallback virtualization check
@@ -604,6 +710,69 @@ class SystemdCliProvider(BaseProvider):
                             {svc: new_state})
         except Exception:
             logging.exception("Error processing service state update")
+
+    async def extract_service_info(
+        self,
+        service_name: str,
+        pid: int,
+        properties: List[str],
+        raw: bool = False
+    ) -> Dict[str, Any]:
+        service_info: Dict[str, Any] = {}
+        expected_name = f"{service_name}.service"
+        try:
+            resp: str = await self.shell_cmd.exec_cmd(
+                f"systemctl status {pid}"
+            )
+            unit_name = resp.split(maxsplit=2)[1]
+            service_info["unit_name"] = unit_name
+            service_info["is_default"] = True
+            if unit_name != expected_name:
+                service_info["is_default"] = False
+                logging.info(
+                    f"Detected alternate unit name for {service_name}: "
+                    f"{unit_name}"
+                )
+            prop_args = ",".join(properties)
+            props: str = await self.shell_cmd.exec_cmd(
+                f"systemctl show -p {prop_args} {unit_name}"
+            )
+            raw_props: Dict[str, Any] = {}
+            lines = [p.strip() for p in props.split("\n") if p.strip]
+            for line in lines:
+                parts = line.split("=", 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    raw_props[key] = val
+            if raw:
+                service_info["properties"] = raw_props
+            else:
+                processed = self._process_raw_properties(raw_props)
+                service_info["properties"] = processed
+        except Exception:
+            logging.exception("Error extracting service info")
+            return {}
+        return service_info
+
+    def _process_raw_properties(
+        self, raw_props: Dict[str, str]
+    ) -> Dict[str, Any]:
+        processed: Dict[str, Any] = {}
+        for key, val in raw_props.items():
+            processed[key] = val
+            if key == "ExecStart":
+                # this is a struct, we need to deconstruct it
+                match = re.search(r"argv\[\]=([^;]+);", val)
+                if match is not None:
+                    processed[key] = match.group(1).strip()
+            elif key == "EnvironmentFiles":
+                if val:
+                    processed[key] = val.split()[0]
+            elif key in ["Requires", "After", "SupplementaryGroups"]:
+                vals = [v.strip() for v in val.split() if v.strip()]
+                processed[key] = vals
+        return processed
 
 class SystemdDbusProvider(BaseProvider):
     def __init__(self, config: ConfigHelper) -> None:
@@ -781,6 +950,72 @@ class SystemdDbusProvider(BaseProvider):
             self.server.send_event("machine:service_state_changed",
                                    {service_name: dict(svc)})
 
+    async def extract_service_info(
+        self,
+        service_name: str,
+        pid: int,
+        properties: List[str],
+        raw: bool = False
+    ) -> Dict[str, Any]:
+        if not hasattr(self, "systemd_mgr"):
+            return {}
+        mgr = self.systemd_mgr
+        service_info: Dict[str, Any] = {}
+        expected_name = f"{service_name}.service"
+        try:
+            dbus_path: str
+            dbus_path = await mgr.call_get_unit_by_pid(pid)  # type: ignore
+            bus = "org.freedesktop.systemd1"
+            unit_intf, svc_intf = await self.dbus_mgr.get_interfaces(
+                "org.freedesktop.systemd1", dbus_path,
+                [f"{bus}.Unit", f"{bus}.Service"]
+            )
+            unit_name = await unit_intf.get_id()  # type: ignore
+            service_info["unit_name"] = unit_name
+            service_info["is_default"] = True
+            if unit_name != expected_name:
+                service_info["is_default"] = False
+                logging.info(
+                    f"Detected alternate unit name for {service_name}: "
+                    f"{unit_name}"
+                )
+            raw_props: Dict[str, Any] = {}
+            for key in properties:
+                snake_key = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", key).lower()
+                func = getattr(unit_intf, f"get_{snake_key}", None)
+                if func is None:
+                    func = getattr(svc_intf, f"get_{snake_key}", None)
+                    if func is None:
+                        continue
+                val = await func()
+                raw_props[key] = val
+            if raw:
+                service_info["properties"] = raw_props
+            else:
+                processed = self._process_raw_properties(raw_props)
+                service_info["properties"] = processed
+        except Exception:
+            logging.exception("Error Extracting Service Info")
+            return {}
+        return service_info
+
+    def _process_raw_properties(
+        self, raw_props: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        processed: Dict[str, Any] = {}
+        for key, val in raw_props.items():
+            if key == "ExecStart":
+                try:
+                    val = " ".join(val[0][1])
+                except Exception:
+                    pass
+            elif key == "EnvironmentFiles":
+                try:
+                    val = val[0][0]
+                except Exception:
+                    pass
+            processed[key] = val
+        return processed
 
 def load_component(config: ConfigHelper) -> Machine:
     return Machine(config)

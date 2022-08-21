@@ -82,7 +82,7 @@ class Server:
         self.events: Dict[str, List[FlexCallback]] = {}
         self.components: Dict[str, Any] = {}
         self.failed_components: List[str] = []
-        self.warnings: List[str] = []
+        self.warnings: Dict[str, str] = {}
         self.klippy_connection = KlippyConnection(config)
 
         # Tornado Application/Server
@@ -92,12 +92,8 @@ class Server:
         self.register_upload_handler = app.register_upload_handler
         self.register_api_transport = app.register_api_transport
 
-        log_warn = args.get('log_warning', "")
-        if log_warn:
-            self.add_warning(log_warn)
-        cfg_warn = args.get("config_warning", "")
-        if cfg_warn:
-            self.add_warning(cfg_warn)
+        for warning in args.get("startup_warnings", []):
+            self.add_warning(warning)
 
         self.register_endpoint(
             "/server/info", ['GET'], self._handle_info_request)
@@ -121,7 +117,7 @@ class Server:
         return API_VERSION
 
     def get_warnings(self) -> List[str]:
-        return self.warnings
+        return list(self.warnings.values())
 
     def is_running(self) -> bool:
         return self.server_running
@@ -187,10 +183,18 @@ class Server:
         if log and item is not None:
             logging.info(item)
 
-    def add_warning(self, warning: str, log: bool = True) -> None:
-        self.warnings.append(warning)
+    def add_warning(
+        self, warning: str, warn_id: Optional[str] = None, log: bool = True
+    ) -> str:
+        if warn_id is None:
+            warn_id = str(id(warning))
+        self.warnings[warn_id] = warning
         if log:
             logging.warning(warning)
+        return warn_id
+
+    def remove_warning(self, warn_id: str) -> None:
+        self.warnings.pop(warn_id, None)
 
     # ***** Component Management *****
     async def _initialize_component(self, name: str, component: Any) -> None:
@@ -400,7 +404,7 @@ class Server:
             'components': list(self.components.keys()),
             'failed_components': self.failed_components,
             'registered_directories': reg_dirs,
-            'warnings': self.warnings,
+            'warnings': list(self.warnings.values()),
             'websocket_count': wsm.get_count(),
             'moonraker_version': self.app_args['software_version'],
             'missing_klippy_requirements': mreqs,
@@ -432,6 +436,8 @@ def main(cmd_line_args: argparse.Namespace) -> None:
     cfg_file = cmd_line_args.configfile
     app_args = {'config_file': cfg_file}
 
+    startup_warnings: List[str] = []
+    app_args["startup_warnings"] = startup_warnings
     # Setup Logging
     version = utils.get_software_version()
     if cmd_line_args.nologfile:
@@ -443,7 +449,7 @@ def main(cmd_line_args: argparse.Namespace) -> None:
     app_args['python_version'] = sys.version.replace("\n", " ")
     ql, file_logger, warning = utils.setup_logging(app_args)
     if warning is not None:
-        app_args['log_warning'] = warning
+        startup_warnings.append(warning)
 
     # Start asyncio event loop and server
     event_loop = EventLoop()
@@ -460,7 +466,9 @@ def main(cmd_line_args: argparse.Namespace) -> None:
                 estatus = 1
                 break
             app_args['config_file'] = backup_cfg
-            app_args['config_warning'] = (
+            warn_list = list(startup_warnings)
+            app_args["startup_warnings"] = warn_list
+            warn_list.append(
                 f"Server configuration error: {e}\n"
                 f"Loaded server from most recent working configuration:"
                 f" '{app_args['config_file']}'\n"
@@ -486,7 +494,7 @@ def main(cmd_line_args: argparse.Namespace) -> None:
         # before the server restarts
         if alt_config_loaded:
             app_args['config_file'] = cfg_file
-            app_args.pop('config_warning', None)
+            app_args["startup_warnings"] = startup_warnings
             alt_config_loaded = False
         event_loop.close()
         # Since we are running outside of the the server
