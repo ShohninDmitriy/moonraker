@@ -58,14 +58,14 @@ class WebcamManager:
             "/server/webcams/test", ["POST"], self._handle_webcam_test
         )
         self.server.register_notification("webcam:webcams_changed")
+        self.server.register_event_handler(
+            "machine:public_ip_changed", self._set_default_host_ip
+        )
 
     async def component_init(self) -> None:
         machine: Machine = self.server.lookup_component("machine")
-        pubnet = await machine.get_public_network()
-        ip: Optional[str] = pubnet.get("address")
-        if ip:
-            default_host = f"http://{ip}"
-            WebCam.set_default_host(default_host)
+        if machine.public_ip:
+            self._set_default_host_ip(machine.public_ip)
         db: MoonrakerDatabase = self.server.lookup_component("database")
         saved_cams: Dict[str, Any] = await db.get_item("webcams", default={})
         for cam_data in saved_cams.values():
@@ -77,6 +77,21 @@ class WebcamManager:
             except Exception:
                 logging.exception("Failed to process webcam from db")
                 continue
+
+    def _set_default_host_ip(self, ip: str) -> None:
+        default_host = "http://127.0.0.1"
+        if ip:
+            try:
+                addr = ipaddress.ip_address(ip)
+            except Exception:
+                logging.debug(f"Invalid IP Recd: {ip}")
+            else:
+                if addr.version == 6:
+                    default_host = f"http://[{addr}]"
+                else:
+                    default_host = f"http://{addr}"
+        WebCam.set_default_host(default_host)
+        logging.info(f"Default public webcam address set: {default_host}")
 
     def get_webcams(self) -> Dict[str, WebCam]:
         return self.webcams
@@ -338,9 +353,9 @@ class WebCam:
         webcam["flip_vertical"] = web_request.get_boolean(
             "flip_vertical", False
         )
-        webcam["rotation"] = web_request.get_str("rotation", 0)
+        webcam["rotation"] = web_request.get_int("rotation", 0)
         if webcam["rotation"] not in [0, 90, 180, 270]:
-            raise server.error("Invalid value for parameter 'rotate'")
+            raise server.error("Invalid value for parameter 'rotation'")
         webcam["source"] = "database"
         return cls(server, **webcam)
 

@@ -630,13 +630,17 @@ class SimplyPrint(Subscribable):
     def _on_klippy_startup(self, state: str) -> None:
         if state != "ready":
             self._update_state("error")
-            self.send_sp("printer_error", None)
+            kconn: KlippyConnection
+            kconn = self.server.lookup_component("klippy_connection")
+            self.send_sp("printer_error", {"error": kconn.state_message})
         self.send_sp("connection", {"new": "connected"})
         self._send_firmware_data()
 
     def _on_klippy_shutdown(self) -> None:
         self._update_state("error")
-        self.send_sp("printer_error", None)
+        kconn: KlippyConnection
+        kconn = self.server.lookup_component("klippy_connection")
+        self.send_sp("printer_error", {"error": kconn.state_message})
 
     def _on_klippy_disconnected(self) -> None:
         self._update_state("offline")
@@ -683,6 +687,16 @@ class SimplyPrint(Subscribable):
             }
             self._send_job_event(job_info)
 
+    def _reset_file(self) -> None:
+        cur_job = self.cache.job_info.get("filename", "")
+        last_started = self.print_handler.last_started
+        if last_started and last_started == cur_job:
+            kapi: KlippyAPI = self.server.lookup_component("klippy_apis")
+            self.eventloop.create_task(
+                kapi.run_gcode("SDCARD_RESET_FILE", default=None)
+            )
+        self.print_handler.last_started = ""
+
     def _on_print_paused(self, *args) -> None:
         self.send_sp("job_info", {"paused": True})
         self._update_state("paused")
@@ -694,6 +708,7 @@ class SimplyPrint(Subscribable):
 
     def _on_print_cancelled(self, *args) -> None:
         self._check_job_started(*args)
+        self._reset_file()
         self._send_job_event({"cancelled": True})
         self._update_state_from_klippy()
         self.cache.job_info = {}
@@ -701,13 +716,19 @@ class SimplyPrint(Subscribable):
 
     def _on_print_error(self, *args) -> None:
         self._check_job_started(*args)
-        self._send_job_event({"failed": True})
+        self._reset_file()
+        payload: Dict[str, Any] = {"failed": True}
+        new_stats: Dict[str, Any] = args[1]
+        msg = new_stats.get("message", "Unknown Error")
+        payload["error"] = msg
+        self._send_job_event(payload)
         self._update_state_from_klippy()
         self.cache.job_info = {}
         self.layer_detect.stop()
 
     def _on_print_complete(self, *args) -> None:
         self._check_job_started(*args)
+        self._reset_file()
         self._send_job_event({"finished": True})
         self._update_state_from_klippy()
         self.cache.job_info = {}
@@ -1391,6 +1412,7 @@ class PrintHandler:
         self.print_ready_event: asyncio.Event = asyncio.Event()
         self.download_progress: int = -1
         self.pending_file: str = ""
+        self.last_started: str = ""
 
     def download_file(self, url: str, start: bool):
         coro = self._download_sp_file(url, start)
@@ -1467,6 +1489,7 @@ class PrintHandler:
         self.pending_file = fpath.name
         if ret.get("print_started", False):
             state = "started"
+            self.last_started = self.pending_file
             self.pending_file = ""
         elif not start and await self._check_can_print():
             state = "ready"
@@ -1501,6 +1524,8 @@ class PrintHandler:
             logging.exception("Print Failed to start")
             data["state"] = "error"
             data["message"] = "Failed to start print"
+        else:
+            self.last_started = pending
         self.simplyprint.send_sp("file_progress", data)
 
     async def _check_can_print(self) -> bool:
