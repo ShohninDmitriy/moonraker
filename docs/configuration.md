@@ -51,21 +51,24 @@ ssl_port: 7130
 #   The port to listen on for SSL (HTTPS) connections.  Note that the HTTPS
 #   server will only be started of the certificate and key options outlined
 #   below are provided.  The default is 7130.
-ssl_certificate_path:
-#   The path to a self signed ssl certificate.  The default is no path, which
-#   disables HTTPS.
-ssl_key_path:
-#   The path to the private key used to signed the certificate.  The default
-#   is no path, which disables HTTPS.
 klippy_uds_address: /tmp/klippy_uds
 #   The address of Unix Domain Socket used to communicate with Klippy. Default
 #   is /tmp/klippy_uds
 max_upload_size: 1024
 #   The maximum size allowed for a file upload (in MiB).  Default is 1024 MiB.
 enable_debug_logging: False
-#   When set to True Moonraker will log in verbose mode.  During this stage
-#   of development the default is False.
+#   ***DEPRECATED***
+#   Verbose logging is enabled by the '-v' command line option.
 ```
+
+!!! Note:
+    Previously the `[server]` section contained `ssl_certificate_path` and
+    `ssl_key_path` options. These options are now deprecated, as both locations
+    are determined by the `data path` and `alias` configured on the command
+    line, ie `<data_file_path>/certs/<alias>.cert`.  By default the certificate
+    path resolves to `$HOME/moonraker_data/certs/moonraker.cert` and the key
+    path resolves to `$HOME/moonraker_data/certs/moonraker.key`.  Both files
+    may be symbolic links.
 
 ### `[file_manager]`
 
@@ -74,18 +77,6 @@ management functionality.  If omitted defaults will be used.
 
 ```ini
 # moonraker.conf
-
-config_path:
-#   The path to a directory where configuration files are located. This
-#   directory may contain Klipper config files (printer.cfg) or Moonraker
-#   config files (moonraker.conf).  Clients may also write their own config
-#   files to this directory.  Note that this may not be the system root
-#   (ie: "/") and moonraker must have read and write access permissions
-#   for this directory.
-log_path:
-#   An optional path to a directory where log files are located.  Users may
-#   configure various applications to store logs here and Moonraker will serve
-#   them at "/server/files/logs/*".  The default is no log paths.
 queue_gcode_uploads: False
 #   When set to True the file manager will add uploads to the job_queue when
 #   the `start_print` flag has been set.  The default if False.
@@ -96,17 +87,17 @@ enable_object_processing: False
 #   "cancel object" functionality.  Note that this process is file I/O intensive,
 #   it is not recommended for usage on low resource SBCs such as a Pi Zero.
 #   The default is False.
+enable_inotify_warnings: True
+#   When set to True Moonraker will generate warnings when inotify attempts
+#   to add a duplicate watch or when inotify encounters an error.  On some
+#   file systems inotify may not work as expected, this gives users the
+#   option to suppress warnings when necessary.  The default is True.
 ```
 
-!!! Warning
-    Moonraker currently supports two paths with read/write access, the
-    `config_path` configured in the `file_manager` and the `virtual_sdcard` path
-    configured through Klipper in `printer.cfg`. These paths are monitored for
-    changes, thus they must not overlap. Likewise, these paths may not be a
-    parent or child of folders containing sensitive files such as the `database`,
-    Moonraker's source, or Klipper's source.  If either of the above conditions
-    are present Moonraker will generate a warning and revoke access to the
-    offending path.
+!!! Note:
+    Previously the `[file_manager]` section contained `config_path` and
+    `log_path` options. These options are now deprecated, as both locations
+    are determined by the `data path` configured on the command line.
 
 !!! Tip
     It is also possible to enable object processing directly in the slicer.
@@ -133,6 +124,18 @@ sudo_password:
 #   see the [secrets] section for details.  It is strongly recommended to only
 #   set this option when required and to use the aforementioned secrets module
 #   when doing so.  The default is no sudo password is set.
+validate_service:
+#   Enables validation of Moonraker's systemd service unit.  If Moonraker
+#   detects that a change is necessary it will attempt to do so.  Custom
+#   installations and installations that do systemd should set this to False.
+#   The default is True.
+validate_config:
+#   Enables validation of Moonraker's configuration.  If Moonraker detects
+#   deprecated options it will attempt to correct them.  The default is True.
+force_validation:
+#   By default Moonraker will not attempt to revalidate if a previous attempt
+#   at validation successfully completed. Setting this value to True will force
+#   Moonraker to perform validation.  The default is False.
 ```
 
 !!! Note
@@ -169,24 +172,11 @@ gcode:
 
 ### `[database]`
 
-The `database` section provides configuration for Moonraker's lmdb database.
-If omitted defaults will be used.
-
-```ini
-moonraker.conf
-
-database_path: ~/.moonraker_database
-#   The path to the folder that stores Moonraker's lmdb database files.
-#   It is NOT recommended to place this file in a location that is served by
-#   Moonraker (such as the "config_path" or the location where gcode
-#   files are stored).  If the folder does not exist an attempt will be made
-#   to create it.  The default is ~/.moonraker_database.
-```
-
-!!! Note
-    Previously the `enable_database_debug` option was available for internal
-    development to test changes to write protected namespaces.  This option
-    been deprecated and disabled.
+!!! Note:
+    This section no long has configuration options.  Previously the
+    `database_path` option was used to determine the locatation of
+    the database folder, it is now determined by the `data path`
+    configured on the command line.
 
 ### `[data_store]`
 
@@ -1211,11 +1201,8 @@ disk or cloned from unofficial sources are not supported.
 
 [update_manager]
 enable_repo_debug: False
-#   When set to True moonraker will bypass repo validation and allow
-#   updates from unofficial remotes and/or branches.  Updates on
-#   detached repos are also allowed.  This option is intended for
-#   developers and should not be used on production machines.  The
-#   default is False.
+#  ***DEPRECATED***
+#   Debug features are now enabled by the '-g' command line option
 enable_auto_refresh: False
 #   When set to True Moonraker will attempt to fetch status about
 #   available updates roughly every 24 hours, between 12am-4am.
@@ -1945,23 +1932,15 @@ separate from `moonraker.conf`.  This allows users to safely distribute
 their configuration and log files without revealing credentials and
 other sensitive information.
 
-```ini
-# moonraker.conf
+!!! Note:
+    This section no long has configuration options.  Previously the
+    `secrets_path` option was used to specify the location of the file.
+    The secrets file name and location is now determined by the `data path`
+    and `alias` command line options, ie: `<data_base_path>/<alias>.secrets`.
+    By default this resolves to `$HOME/moonraker_data/moonraker.secrets`.
+    This may be a symbolic link.
 
-[secrets]
-secrets_path:
-#   A valid path to the "secrets" file.  A secrets file should either be
-#   in "ini" format (ie: the same format as moonraker.conf) or "json"
-#   format.  If the file is a "json" file, the top level item must be
-#   an Object.  When this parameter is not specified no file will be
-#   loaded.
-```
-
-!!! Warning
-    For maximum security the secrets file should be located in a folder
-    not served by Moonraker.
-
-Example ini file:
+Example ini secrets file:
 
 ```ini
 # moonraker_secrets.ini
@@ -1975,7 +1954,7 @@ token: long_token_string
 
 ```
 
-Example json file:
+Example json secrets file:
 
 ```json
 {
@@ -2264,12 +2243,10 @@ for core component configuration if no section was present.
 
 On April 6th 2022 the fallback was deprecated.  Moonraker will still function
 normally if `core components` are configured in the `[server]` section,
-however Moonraker now generates warnings when it detected this condition,
+however Moonraker now generates warnings when it detects this condition,
 such as:
 
 ```
-[server]: Option 'config_path' has been moved to section [file_manager]. Please correct your configuration, see https://moonraker.readthedocs.io/en/latest/configuration for detailed documentation.
-[server]: Option 'log_path' has been moved to section [file_manager]. Please correct your configuration, see https://moonraker.readthedocs.io/en/latest/configuration for detailed documentation.
 [server]: Option 'temperature_store_size' has been moved to section [data_store]. Please correct your configuration, see https://moonraker.readthedocs.io/en/latest/configuration for detailed documentation.
 [server]: Option 'gcode_store_size' has been moved to section [data_store]. Please correct your configuration, see https://moonraker.readthedocs.io/en/latest/configuration for detailed documentation
 ```
@@ -2285,8 +2262,6 @@ host: 0.0.0.0
 port: 7125
 temperature_store_size: 600
 gcode_store_size: 1000
-config_path: ~/klipper_config
-log_path: ~/klipper_logs
 
 ```
 
@@ -2298,10 +2273,6 @@ You will need to change it to the following;
 [server]
 host: 0.0.0.0
 port: 7125
-
-[file_manager]
-config_path: ~/klipper_config
-log_path: ~/klipper_logs
 
 [data_store]
 temperature_store_size: 600
@@ -2318,8 +2289,3 @@ make the changes.
 
 Once the changes are complete you may use the UI to restart Moonraker and
 the warnings should clear.
-
-!!! Note
-    Some users have asked why Moonraker does not automate these changes.
-    Currently Moonraker has no mechanism to modify the configuration directly,
-    however this functionality will be added in the future.
