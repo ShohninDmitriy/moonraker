@@ -390,7 +390,7 @@ class Machine:
 
     async def check_sudo_access(self, cmds: List[str] = []) -> bool:
         if not cmds:
-            cmds = ["systemctl --version", "ls /lost+found"]
+            cmds = ["systemctl --version", "ls /root"]
         shell_cmd: SCMDComp = self.server.lookup_component("shell_command")
         for cmd in cmds:
             try:
@@ -1299,7 +1299,7 @@ class InstallValidator:
         if unit != "moonraker":
             logging.info(f"Custom service file detected: {unit}")
             # Not using he default unit name
-            if app_args["is_default_data_path"]:
+            if app_args["is_default_data_path"] and self.data_path_valid:
                 # No datapath set, create a new, unique data path
                 df = f"~/{unit}_data"
                 match = re.match(r"moonraker[-_]?(\d+)", unit)
@@ -1314,7 +1314,10 @@ class InstallValidator:
                     )
 
                 # If the current path is bare we can remove it
-                if self._check_path_bare(self.data_path):
+                if (
+                    self.data_path.exists() and
+                    self._check_path_bare(self.data_path)
+                ):
                     shutil.rmtree(self.data_path)
                 self.data_path = new_dp
                 if not self.data_path.exists():
@@ -1409,6 +1412,8 @@ class InstallValidator:
 
     def _check_path_bare(self, path: pathlib.Path) -> bool:
         empty: bool = True
+        if not path.exists():
+            return True
         for item in path.iterdir():
             if (
                 item.is_file() or
@@ -1417,7 +1422,7 @@ class InstallValidator:
             ):
                 empty = False
                 break
-            if next(item.iterdir(), None) is not None:
+            if item.is_dir() and next(item.iterdir(), None) is not None:
                 empty = False
                 break
         return empty
@@ -1632,6 +1637,12 @@ class InstallValidator:
             url, "high", "machine"
         )
         self.announcement_id = entry.get("entry_id", "")
+        gc_announcement = (
+            "!! ATTENTION: Moonraker requires sudo access to complete "
+            "the update.  Go to the following URL and provide your linux "
+            f"password: {url}"
+        )
+        self.server.send_event("server:gcode_response", gc_announcement)
 
     async def remove_announcement(self):
         if not self.announcement_id:
@@ -1653,9 +1664,10 @@ class InstallValidator:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            logging.exception(f"{name} validation failed")
             raise self.server.error(
-                f"{name} validation failed with error:\n{e}", 500
-            ) from e
+                f"{name} validation failed", 500
+            ) from None
         await self.remove_announcement()
         db: MoonrakerDatabase = self.server.lookup_component("database")
         await db.insert_item(

@@ -26,6 +26,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Awaitable,
+    Callable,
     Optional,
     Set,
     Tuple,
@@ -76,7 +77,7 @@ class UpdateManager:
             config, self.channel
         )
         auto_refresh_enabled = config.getboolean('enable_auto_refresh', False)
-        self.cmd_helper = CommandHelper(config)
+        self.cmd_helper = CommandHelper(config, self.get_updaters)
         self.updaters: Dict[str, BaseDeploy] = {}
         if config.getboolean('enable_system_updates', True):
             self.updaters['system'] = PackageDeploy(config, self.cmd_helper)
@@ -165,6 +166,9 @@ class UpdateManager:
         self.server.register_event_handler(
             "server:klippy_identified", self._set_klipper_repo)
 
+    def get_updaters(self) -> Dict[str, BaseDeploy]:
+        return self.updaters
+
     async def component_init(self) -> None:
         # Prune stale data from the database
         umdb = self.cmd_helper.get_umdb()
@@ -218,13 +222,7 @@ class UpdateManager:
             await self.updaters['klipper'].initialize()
             await self.updaters['klipper'].refresh()
         if notify:
-            vinfo: Dict[str, Any] = {}
-            for name, updater in self.updaters.items():
-                vinfo[name] = updater.get_update_status()
-            uinfo = self.cmd_helper.get_rate_limit_stats()
-            uinfo['version_info'] = vinfo
-            uinfo['busy'] = self.cmd_helper.is_update_busy()
-            self.server.send_event("update_manager:update_refreshed", uinfo)
+            self.cmd_helper.notify_update_refreshed()
 
     async def _check_klippy_printing(self) -> bool:
         kapi: APIComp = self.server.lookup_component('klippy_apis')
@@ -243,7 +241,6 @@ class UpdateManager:
                 # Don't Refresh during a print
                 logging.info("Klippy is printing, auto refresh aborted")
                 return eventtime + UPDATE_REFRESH_INTERVAL
-        vinfo: Dict[str, Any] = {}
         need_notify = False
         machine: Machine = self.server.lookup_component("machine")
         if machine.validation_enabled():
@@ -259,17 +256,13 @@ class UpdateManager:
                     if updater.needs_refresh():
                         await updater.refresh()
                         need_notify = True
-                    vinfo[name] = updater.get_update_status()
             except Exception:
                 logging.exception("Unable to Refresh Status")
                 return eventtime + UPDATE_REFRESH_INTERVAL
             finally:
                 self.initial_refresh_complete = True
         if need_notify:
-            uinfo = self.cmd_helper.get_rate_limit_stats()
-            uinfo['version_info'] = vinfo
-            uinfo['busy'] = self.cmd_helper.is_update_busy()
-            self.server.send_event("update_manager:update_refreshed", uinfo)
+            self.cmd_helper.notify_update_refreshed()
         return eventtime + UPDATE_REFRESH_INTERVAL
 
     async def _handle_update_request(self,
@@ -292,9 +285,7 @@ class UpdateManager:
                     await updater.update()
             except Exception as e:
                 self.cmd_helper.notify_update_response(
-                    f"Error updating {app}")
-                self.cmd_helper.notify_update_response(
-                    str(e), is_complete=True)
+                    f"Error updating {app}: {e}", is_complete=True)
                 raise
             finally:
                 self.cmd_helper.clear_update_info()
@@ -359,11 +350,9 @@ class UpdateManager:
                 self.cmd_helper.notify_update_response(
                     "Full Update Complete", is_complete=True)
             except Exception as e:
-                self.cmd_helper.notify_update_response(
-                    f"Error updating {app_name}")
                 self.cmd_helper.set_full_complete(True)
                 self.cmd_helper.notify_update_response(
-                    str(e), is_complete=True)
+                    f"Error updating {app_name}: {e}", is_complete=True)
             finally:
                 self.cmd_helper.clear_update_info()
             return "ok"
@@ -437,8 +426,8 @@ class UpdateManager:
         if check_refresh:
             event_loop = self.server.get_event_loop()
             event_loop.delay_callback(
-                .2, self.server.send_event,
-                "update_manager:update_refreshed", ret)
+                .2, self.cmd_helper.notify_update_refreshed
+            )
         return ret
 
     async def _handle_repo_recovery(self,
@@ -474,8 +463,13 @@ class UpdateManager:
             self.refresh_timer.stop()
 
 class CommandHelper:
-    def __init__(self, config: ConfigHelper) -> None:
+    def __init__(
+        self,
+        config: ConfigHelper,
+        get_updater_cb: Callable[[], Dict[str, BaseDeploy]]
+    ) -> None:
         self.server = config.get_server()
+        self.get_updaters = get_updater_cb
         self.http_client: HttpClient
         self.http_client = self.server.lookup_component("http_client")
         config.getboolean('enable_repo_debug', False, deprecate=True)
@@ -587,6 +581,15 @@ class CommandHelper:
         result = await scmd.run_with_response(timeout, retries,
                                               sig_idx=sig_idx)
         return result
+
+    def notify_update_refreshed(self):
+        vinfo: Dict[str, Any] = {}
+        for name, updater in self.get_updaters().items():
+            vinfo[name] = updater.get_update_status()
+        uinfo = self.get_rate_limit_stats()
+        uinfo['version_info'] = vinfo
+        uinfo['busy'] = self.is_update_busy()
+        self.server.send_event("update_manager:update_refreshed", uinfo)
 
     def notify_update_response(self,
                                resp: Union[str, bytes],
@@ -1176,6 +1179,7 @@ class WebClientDeploy(BaseDeploy):
         storage = await super().initialize()
         self.version: str = storage.get('version', "?")
         self.remote_version: str = storage.get('remote_version', "?")
+        self.last_error: str = storage.get('last_error', "")
         dl_info: List[Any] = storage.get('dl_info', ["?", "?", 0])
         self.dl_info: Tuple[str, str, int] = cast(
             Tuple[str, str, int], tuple(dl_info))
@@ -1208,7 +1212,9 @@ class WebClientDeploy(BaseDeploy):
         else:
             resource = f"repos/{self.repo}/releases?per_page=1"
         client = self.cmd_helper.get_http_client()
-        resp = await client.github_api_request(resource, attempts=3)
+        resp = await client.github_api_request(
+            resource, attempts=3, retry_pause_time=.5
+        )
         release: Union[List[Any], Dict[str, Any]] = {}
         if resp.status_code == 304:
             if self.remote_version == "?" and resp.content:
@@ -1221,6 +1227,8 @@ class WebClientDeploy(BaseDeploy):
         elif resp.has_error():
             logging.info(
                 f"Client {self.repo}: Github Request Error - {resp.error}")
+            self.last_error = str(resp.error)
+            return
         else:
             release = resp.json()
         result: Dict[str, Any] = {}
@@ -1229,6 +1237,7 @@ class WebClientDeploy(BaseDeploy):
                 result = release[0]
         else:
             result = release
+        self.last_error = ""
         self.remote_version = result.get('name', "?")
         release_asset: Dict[str, Any] = result.get('assets', [{}])[0]
         dl_url: str = release_asset.get('browser_download_url', "?")
@@ -1249,6 +1258,7 @@ class WebClientDeploy(BaseDeploy):
         storage['version'] = self.version
         storage['remote_version'] = self.remote_version
         storage['dl_info'] = list(self.dl_info)
+        storage['last_error'] = self.last_error
         return storage
 
     async def update(self) -> bool:
@@ -1328,7 +1338,8 @@ class WebClientDeploy(BaseDeploy):
             'remote_version': self.remote_version,
             'configured_type': self.type,
             'channel': self.channel,
-            'info_tags': self.info_tags
+            'info_tags': self.info_tags,
+            'last_error': self.last_error
         }
 
 def load_component(config: ConfigHelper) -> UpdateManager:
