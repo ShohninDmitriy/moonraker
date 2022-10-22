@@ -381,7 +381,16 @@ group_dn: CN=moonraker,OU=Groups,DC=ldap,DC=local
 #   authentication.  This option accepts Jinja2 Templates, see the [secrets]
 #   section for details. The default is no group requirement.
 is_active_directory: True
-#   Enables support for Microsoft Active Directory.  The default is False.
+#   Enables support for Microsoft Active Directory. This option changes the
+#   field used to lookup a user by username to sAMAccountName.
+#   The default is False.
+user_filter: (&(objectClass=user)(cn=USERNAME))
+#   Allows filter of users by custom LDAP query. Must contain the USERNAME
+#   token, it will be replaced by the user's username during lookup. Will
+#   override the change done by is_active_directory. This option accepts
+#   Jinja2 Templates, see the [secrets] section for details.
+#   The default is empty, which will change the lookup query depending on
+#   is_active_directory.
 ```
 
 ### `[octoprint_compat]`
@@ -1827,7 +1836,7 @@ pin: gpiochip0/gpio26
 #      ^!gpiochip0/gpio26
 #      ~!gpiochip0/gpio26
 #   This parameter must be provided
-min_event_time: .05
+minimum_event_time: .05
 #   The minimum time (in seconds) between events to trigger a response.  This is
 #   is used to debounce buttons.  This value must be at least .01 seconds.
 #   The default is .05 seconds (50 milliseconds).
