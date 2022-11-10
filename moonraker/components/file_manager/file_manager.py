@@ -87,6 +87,8 @@ class FileManager:
         self.server.register_endpoint(
             "/server/files/metadata", ['GET'], self._handle_metadata_request)
         self.server.register_endpoint(
+            "/server/files/roots", ['GET'], self._handle_list_roots)
+        self.server.register_endpoint(
             "/server/files/directory", ['GET', 'POST', 'DELETE'],
             self._handle_directory_request)
         self.server.register_endpoint(
@@ -249,6 +251,8 @@ class FileManager:
         if isinstance(req_path, str):
             req_path = pathlib.Path(req_path)
         req_path = req_path.expanduser().resolve()
+        if ".git" in req_path.parts:
+            return True
         for name, (res_path, can_read) in self.reserved_paths.items():
             if (
                 (res_path == req_path or res_path in req_path.parents) and
@@ -333,6 +337,19 @@ class FileManager:
                 f"Metadata not available for <{requested_file}>", 404)
         metadata['filename'] = requested_file
         return metadata
+
+    async def _handle_list_roots(
+        self, web_request: WebRequest
+    ) -> List[Dict[str, Any]]:
+        root_list: List[Dict[str, Any]] = []
+        for name, path in self.file_paths.items():
+            perms = "rw" if name in self.full_access_roots else "r"
+            root_list.append({
+                "name": name,
+                "path": path,
+                "permissions": perms
+            })
+        return root_list
 
     async def _handle_directory_request(self,
                                         web_request: WebRequest
@@ -528,14 +545,21 @@ class FileManager:
             path = pathlib.Path(path)
         real_path = path.resolve()
         fstat = path.stat()
-        permissions = "rw"
-        if (
-            root not in self.full_access_roots or
-            (path.is_symlink() and path.is_file())
-        ):
-            permissions = "r"
-        if self.check_reserved_path(real_path, permissions == "rw", False):
+        if ".git" in real_path.parts:
             permissions = ""
+        else:
+            permissions = "rw"
+            if (
+                root not in self.full_access_roots or
+                (path.is_symlink() and path.is_file())
+            ):
+                permissions = "r"
+            for name, (res_path, can_read) in self.reserved_paths.items():
+                if (res_path == real_path or res_path in real_path.parents):
+                    if not can_read:
+                        permissions = ""
+                        break
+                    permissions = "r"
         return {
             'modified': fstat.st_mtime,
             'size': fstat.st_size,
@@ -733,7 +757,8 @@ class FileManager:
                 key = (st.st_dev, st.st_ino)
                 if key not in visited_dirs:
                     visited_dirs.add(key)
-                    scan_dirs.append(dname)
+                    if not self.check_reserved_path(full_path, False, False):
+                        scan_dirs.append(dname)
             dir_names[:] = scan_dirs
             for name in files:
                 ext = os.path.splitext(name)[-1].lower()
@@ -900,6 +925,9 @@ class InotifyNode:
         for fname in os.listdir(dir_path):
             item_path = os.path.join(dir_path, fname)
             if os.path.isdir(item_path):
+                fm = self.ihdlr.file_manager
+                if fm.check_reserved_path(item_path, True, False):
+                    continue
                 new_child = self.create_child_node(fname, False)
                 if new_child is not None:
                     metadata_events.extend(new_child.scan_node(visited_dirs))
