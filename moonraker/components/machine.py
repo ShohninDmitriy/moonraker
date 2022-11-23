@@ -108,7 +108,8 @@ class Machine:
         providers: Dict[str, type] = {
             "none": BaseProvider,
             "systemd_cli": SystemdCliProvider,
-            "systemd_dbus": SystemdDbusProvider
+            "systemd_dbus": SystemdDbusProvider,
+            "supervisord": SupervisordProvider
         }
         self.provider_type = config.get('provider', 'systemd_dbus')
         pclass = providers.get(self.provider_type)
@@ -231,7 +232,8 @@ class Machine:
     async def _handle_machine_request(self, web_request: WebRequest) -> str:
         ep = web_request.get_endpoint()
         if self.inside_container:
-            virt_id = self.system_info['virtualization'].get('virt_id', "none")
+            virt_id = self.system_info['virtualization'].get(
+                'virt_identifier', "none")
             raise self.server.error(
                 f"Cannot {ep.split('/')[-1]} from within a "
                 f"{virt_id} container")
@@ -747,7 +749,7 @@ class BaseProvider:
                                 action: str,
                                 service_name: str
                                 ) -> None:
-        raise self.server.error("Serice Actions Not Available", 503)
+        raise self.server.error("Service Actions Not Available", 503)
 
     async def check_virt_status(self) -> Dict[str, Any]:
         return {
@@ -1170,6 +1172,113 @@ class SystemdDbusProvider(BaseProvider):
                     pass
             processed[key] = val
         return processed
+
+# for docker klipper-moonraker image multi-service managing
+# since in container, all command is launched by normal user,
+# sudo_cmd is not needed.
+class SupervisordProvider(BaseProvider):
+    def __init__(self, config: ConfigHelper) -> None:
+        super().__init__(config)
+        self.spv_conf: str = config.get("supervisord_config_path", "")
+
+    async def initialize(self) -> None:
+        for svc in ("klipper", "moonraker"):
+            self.available_services[svc] = {
+                'active_state': "none",
+                'sub_state': "unknown"
+            }
+        self.svc_cmd = self.shell_cmd.build_shell_command(
+            f"supervisorctl {self.spv_conf}"
+            f"status {' '.join(list(self.available_services.keys()))}"
+        )
+        await self._update_service_status(0, notify=True)
+        pstats: ProcStats = self.server.lookup_component('proc_stats')
+        pstats.register_stat_callback(self._update_service_status)
+
+    async def shutdown(self) -> None:
+        raise self.server.error(
+            "[machine]: Supervisord manager can not process SHUTDOWN."
+            "Please try KILL container or stop Supervisord via ssh terminal."
+        )
+        return
+
+    async def reboot(self) -> None:
+        raise self.server.error(
+            "[machine]: Supervisord manager can not process REBOOT."
+            "Please try KILL container or stop Supervisord via ssh terminal."
+        )
+        return
+
+    async def do_service_action(
+        self, action: str, service_name: str
+    ) -> None:
+        # slow reaction for supervisord, timeout set to 6.0
+        await self._exec_command(
+            f"supervisorctl {self.spv_conf}"
+            f"{action} {service_name}",
+            timeout=6.
+        )
+
+    async def check_virt_status(self) -> Dict[str, Any]:
+        virt_id = virt_type = "none"
+        if (
+            os.path.exists("/.dockerenv") or
+            os.path.exists("/.dockerinit")
+        ):
+            virt_id = "docker"
+            virt_type = "container"
+        return {
+            'virt_type': virt_type,
+            'virt_identifier': virt_id
+        }
+
+    async def _exec_command(
+        self, command: str, tries: int = 1, timeout=2.
+    ) -> str:
+        return await self.shell_cmd.exec_cmd(
+            command, proc_input=None, log_complete=False, retries=tries,
+            timeout=timeout
+        )
+
+    async def _update_service_status(self,
+                                     sequence: int,
+                                     notify: bool = True
+                                     ) -> None:
+        if sequence % 2:
+            # Update every other sequence
+            return
+        svcs = list(self.available_services.keys())
+        try:
+            # slow reaction for supervisord, timeout set to 6.0
+            resp = await self.svc_cmd.run_with_response(
+                log_complete=False, timeout=6.
+            )
+            resp_l = resp.strip().split("\n")  # drop lengend
+            for svc, state in zip(svcs, resp_l):
+                sub_state = state.split()[1].lower()
+                new_state: Dict[str, str] = {
+                    'active_state': "active",
+                    'sub_state': sub_state
+                }
+                if self.available_services[svc] != new_state:
+                    self.available_services[svc] = new_state
+                    if notify:
+                        self.server.send_event(
+                            "machine:service_state_changed",
+                            {svc: new_state})
+        except Exception:
+            logging.exception("Error processing service state update")
+
+    # service files is defined since docker build.
+    # not needed to implete SV.
+    async def extract_service_info(
+        self,
+        service: str,
+        pid: int,
+        properties: List[str],
+        raw: bool = False
+    ) -> Dict[str, Any]:
+        return {}
 
 
 # Install validation
