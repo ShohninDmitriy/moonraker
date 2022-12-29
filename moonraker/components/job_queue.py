@@ -66,6 +66,8 @@ class JobQueue:
             "/server/job_queue/start", ['POST'], self._handle_start_queue)
         self.server.register_endpoint(
             "/server/job_queue/status", ['GET'], self._handle_queue_status)
+        self.server.register_endpoint(
+            "/server/job_queue/jump", ['POST'], self._handle_jump)
 
     async def _handle_ready(self) -> None:
         async with self.lock:
@@ -157,7 +159,8 @@ class JobQueue:
 
     async def queue_job(self,
                         filenames: Union[str, List[str]],
-                        check_exists: bool = True
+                        check_exists: bool = True,
+                        reset: bool = False
                         ) -> None:
         async with self.lock:
             # Make sure that the file exists
@@ -167,6 +170,8 @@ class JobQueue:
                 # Make sure all files exist before adding them to the queue
                 for fname in filenames:
                     self._check_job_file(fname)
+            if reset:
+                self.queued_jobs.clear()
             for fname in filenames:
                 queued_job = QueuedJob(fname)
                 self.queued_jobs[queued_job.job_id] = queued_job
@@ -247,10 +252,11 @@ class JobQueue:
         action = web_request.get_action()
         if action == "POST":
             files: Union[List[str], str] = web_request.get('filenames')
+            reset = web_request.get_boolean("reset", False)
             if isinstance(files, str):
                 files = [f.strip() for f in files.split(',') if f.strip()]
             # Validate that all files exist before queueing
-            await self.queue_job(files)
+            await self.queue_job(files, reset=reset)
         elif action == "DELETE":
             if web_request.get_boolean("all", False):
                 await self.delete_job([], all=True)
@@ -288,6 +294,20 @@ class JobQueue:
     async def _handle_queue_status(self,
                                    web_request: WebRequest
                                    ) -> Dict[str, Any]:
+        return {
+            'queued_jobs': self._job_map_to_list(),
+            'queue_state': self.queue_state
+        }
+
+    async def _handle_jump(self, web_request: WebRequest) -> Dict[str, Any]:
+        job_id: str = web_request.get("job_id")
+        async with self.lock:
+            job = self.queued_jobs.pop(job_id, None)
+            if job is None:
+                raise self.server.error(f"Invalid job id: {job_id}")
+            new_queue = {job_id: job}
+            new_queue.update(self.queued_jobs)
+            self.queued_jobs = new_queue
         return {
             'queued_jobs': self._job_map_to_list(),
             'queue_state': self.queue_state
