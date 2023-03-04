@@ -19,6 +19,8 @@ import shlex
 import re
 import struct
 import socket
+import enum
+from . import source_info
 
 # Annotation imports
 from typing import (
@@ -28,13 +30,13 @@ from typing import (
     ClassVar,
     Tuple,
     Dict,
+    Union
 )
 
 if TYPE_CHECKING:
     from types import ModuleType
     from asyncio.trsock import TransportSocket
 
-MOONRAKER_PATH = str(pathlib.Path(__file__).parent.parent.resolve())
 SYS_MOD_PATHS = glob.glob("/usr/lib/python3*/dist-packages")
 SYS_MOD_PATHS += glob.glob("/usr/lib/python3*/site-packages")
 
@@ -44,14 +46,8 @@ class ServerError(Exception):
         self.status_code = status_code
 
 
-class SentinelClass:
-    _instance: ClassVar[Optional[SentinelClass]] = None
-
-    @staticmethod
-    def get_instance() -> SentinelClass:
-        if SentinelClass._instance is None:
-            SentinelClass._instance = SentinelClass()
-        return SentinelClass._instance
+class Sentinel(enum.Enum):
+    MISSING = object()
 
 def _run_git_command(cmd: str) -> str:
     prog = shlex.split(cmd)
@@ -87,13 +83,15 @@ def retrieve_git_version(source_path: str) -> str:
     return f"t{tag}-g{ver}-shallow"
 
 def get_software_version() -> str:
-    version = "?"
-
+    pkg_ver = source_info.package_version()
+    if pkg_ver is not None:
+        return pkg_ver
+    version: str = "?"
+    src_path = source_info.source_path()
     try:
-        version = retrieve_git_version(MOONRAKER_PATH)
+        version = retrieve_git_version(str(src_path))
     except Exception:
-        vfile = pathlib.Path(os.path.join(
-            MOONRAKER_PATH, "moonraker/.version"))
+        vfile = src_path.joinpath("moonraker/.version")
         if vfile.exists():
             try:
                 version = vfile.read_text().strip()
@@ -103,12 +101,15 @@ def get_software_version() -> str:
     return version
 
 
-def hash_directory(dir_path: str,
-                   ignore_exts: List[str],
-                   ignore_dirs: List[str]
-                   ) -> str:
+def hash_directory(
+    dir_path: Union[str, pathlib.Path],
+    ignore_exts: List[str],
+    ignore_dirs: List[str]
+) -> str:
+    if isinstance(dir_path, str):
+        dir_path = pathlib.Path(dir_path)
     checksum = hashlib.blake2s()
-    if not os.path.exists(dir_path):
+    if not dir_path.exists():
         return ""
     for dpath, dnames, fnames in os.walk(dir_path):
         valid_dirs: List[str] = []
@@ -128,8 +129,14 @@ def hash_directory(dir_path: str,
                 pass
     return checksum.hexdigest()
 
-def verify_source(path: str = MOONRAKER_PATH) -> Optional[Tuple[str, bool]]:
-    rfile = pathlib.Path(os.path.join(path, ".release_info"))
+def verify_source(
+    path: Optional[Union[str, pathlib.Path]] = None
+) -> Optional[Tuple[str, bool]]:
+    if path is None:
+        path = source_info.source_path()
+    elif isinstance(path, str):
+        path = pathlib.Path(path)
+    rfile = path.joinpath(".release_info")
     if not rfile.exists():
         return None
     try:

@@ -94,7 +94,16 @@ enable_object_processing: False
 #   "cancel object" functionality.  Note that this process is file I/O intensive,
 #   it is not recommended for usage on low resource SBCs such as a Pi Zero.
 #   The default is False.
+file_system_observer: inotify
+#   The observer used to monitor file system changes.  May be inotify or none.
+#   When set to none file system observation is disabled.  The default is
+#   inotify.
+enable_observer_warnings: True
+#   When set to True Moonraker will generate warnings when an observer
+#   encounters an error. This may be useful to determine if the observer
+#   malfunctioning. The default is True.
 enable_inotify_warnings: True
+#   *** DEPRECATED - SEE "enable_observer_warnings" ***
 #   When set to True Moonraker will generate warnings when inotify attempts
 #   to add a duplicate watch or when inotify encounters an error.  On some
 #   file systems inotify may not work as expected, this gives users the
@@ -1160,10 +1169,10 @@ device_id:
 #   An explanation on how you could get the device id, can be found here:
 #   https://developers.meethue.com/develop/get-started-2/#turning-a-light-on-and-off
 device_type: light
-#   Set to light to control a single hue light, or group to control a hue light gorup. 
-#   If device_type is set to light, the device_id should be the light id, 
+#   Set to light to control a single hue light, or group to control a hue light group.
+#   If device_type is set to light, the device_id should be the light id,
 #   and if the device_type is group, the device_id should be the group id.
-#   The default is "light.
+#   The default is "light".
 
 ```
 
@@ -1448,9 +1457,8 @@ info_tags:
     semantic version format, `vX.Y.Z`, where X, Y, and Z are all unsigned
     integer values.  For example, a repos first tag might be `v0.0.1`.
 
-    Moonraker can still update repos without tags, however as of 2/8/2023
-    the common front ends disable update controls when version information
-    is not reported by Moonraker.
+    Moonraker can update repos without tags, however front ends may disable
+    update controls when version information is not reported by Moonraker.
 
 ```ini
 # moonraker.conf
@@ -1459,17 +1467,15 @@ info_tags:
 # systemd service
 [update_manager extension_name]
 type: git_repo
-#   Can be git_repo or zip.  This value is set depending on how an extension
-#   chooses to deploy updates, see its documentation for details  This
-#   parameter must be provided.
+#   Currently must be git_repo.  This value is set depending on how an
+#   extension chooses to deploy updates, see its documentation for details.
+#   This parameter must be provided.
 channel: dev
 #   The update channel.  The available value differs depending on the
 #   "type" option.
 #      type: git_repo - May be dev or beta.  The dev channel will update to
 #                       the latest pushed commit, whereas the beta channel
 #                       will update to the latest tagged commit.
-#      type: zip      - May be be stable or beta.  When beta is specified
-#                       "pre-release" updates are available.
 #   The default is dev.
 path:
 #   The absolute path to the client's files on disk. This parameter must be
@@ -1504,14 +1510,6 @@ enable_node_updates:
 #   to package-lock.json.  Note that if your project does not have a
 #   package-lock.json in its root directory then the plugin will fail to load.
 #   Default is False.
-host_repo:
-#   The GitHub repo in which zipped releases are hosted.  Note that this does
-#   not need to match the repository in the "origin" option, as it is possible
-#   to use a central GitHub repository to host multiple extension builds.  As
-#   an example, Moonraker's repo hosts builds for both Moonraker and Klipper.
-#   This option defaults to the repo extracted from the "origin" option,
-#   however if the origin is not hosted on GitHub then this parameter must
-#   be provided.
 is_system_service: True
 #   This should be set to False for repos that are not installed as a service
 #   or do not need to restart a service after updates. This option sets the
@@ -1530,11 +1528,18 @@ managed_services:
 #       <name>    - The name configured in the extension's section header.
 #                   If the section header is [update_manager KlipperScreen]
 #                   then KlipperScreen would be a valid value.
-#       klipper   - The klipper service will be restarted after an update
-#       moonraker - The moonraker service will be restarted after an update
+#       klipper   - The Klipper service associated with this instance of
+#                   Moonraker will be restarted after an update.
+#       moonraker - The Moonraker service will be restarted after an update.
+#
+#   NOTE: Moonraker will resolve the service names for the "klipper" and
+#   "moonraker" services if they are not the default values.  Specific names
+#   such as "klipper-1" or "moonraker_2" should not be entered in this option.
+#
 #   When this option is specified it overrides the "is_system_service" option.
 #   Thus it is not required to specify both, only one or the other.  The
-#   default depends on "is_system_service" as explained above.
+#   default is no managed services if "is_system_service" is set to False,
+#   otherwise the default is the service named in the section header.
 refresh_interval:
 #   This overrides the refresh_interval set in the primary [update_manager]
 #   section.
@@ -1549,148 +1554,13 @@ info_tags:
 #   The default is an empty list.
 ```
 
-## `[Timelapse]`
-Generate Timelapse of a Print
+!!! Note
+    If this application requires a restart after an update it may be necessary
+    to grant Moonraker permission to manage its service. See the
+    [allowed services](#allowed-services) section for details on which
+    services Moonraker is allowed to manage and how to add additional services.
 
-This Component depends on FFMPEG and mjpegstreamer installed on the System which
-is preinstalled in MainsailOs and FluidPI.
-If not you can install it manually using this Guide:
-https://github.com/cncjs/cncjs/wiki/Setup-Guide:-Raspberry-Pi-%7C-MJPEG-Streamer-Install-&-Setup-&-FFMpeg-Recording#mjpeg-streamer-install--setup
-
-You may want to change your Webcamstream to higher resolution, 
-depeding on your OS the mpjepg-streamer config file location differ:   
-- MainsailOS: /boot/mainsail.txt   
-- FluiddPI: 	/boot/fluiddpi.txt   
-
-NOTE:   /boot is owned by root and can not editet as pi user!
-        To edit it use ``sudo nano /boot/mainsail.txt`` via ssh
-        or plug your sd card into your pc and edit it there.  
-
-    
-mjpeg-streamer options see:    
-https://github.com/jacksonliam/mjpg-streamer/blob/master/mjpg-streamer-experimental/plugins/input_uvc/README.md
-
-
-### Activate and configure the plugin adding following to your moonraker.conf:
-```ini
-# moonraker.conf
-
-[timelapse]
-#enabled: True
-##   If this set to False the Gcode macros are ignored and
-##   the autorender is disabled at the end of the print.
-##   The idea is to disable the plugin by default and only activate 
-##   it during runtime via the http endpoint if a timelapse is desired.
-#autorender: True
-##   If this is set to False, the autorender is disabled at the end of the print.
-#constant_rate_factor: 23
-##   The range of the CRF scale is 0–51, where 0 is lossless,
-##   23 is the default, and 51 is worst quality possible. 
-##   A lower value generally leads to higher quality, and a 
-##   subjectively sane range is 17–28.
-##   more info: https://trac.ffmpeg.org/wiki/Encode/H.264
-#output_framerate: 30
-##   Output framerate of the generated video
-#output_path: ~/timelapse/
-##   Path where the generated video will be saved
-#frame_path: /tmp/timelapse/
-##   Path where the temporary frames are saved
-#time_format_code: %Y%m%d_%H%M
-##   Manipulates datetime format of the output filename
-##   see: https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
-#snapshoturl: http://localhost:8080/?action=snapshot
-##   url to your webcamstream
-#pixelformat: yuv420p
-##   set pixelformat for output video
-##   default to yuv420p because eg. yuvj422p will not play on 
-##   on most smartphones or older media players
-#extraoutputparams: 
-##   here you can extra output parameters to FFMPEG 
-##   further info: https://ffmpeg.org/ffmpeg.html 
-##   eg rotate video by 180° "-vf transpose=2,transpose=2"
-##   or repeat last frame for 5 seconds:
-##   -filter_complex "[0]trim=0:5[hold];[0][hold]concat[extended];[extended][0]overlay"
-```
-
-### Define the Gcode Macro:
-Add the macro to your printer.cfg
-```ini
-# printer.cfg
-
-[gcode_macro _TIMELAPSE_NEW_FRAME]
-gcode:
- {action_call_remote_method("timelapse_newframe")}
- ; leave this in a separate macro!
-
-[gcode_macro TIMELAPSE_TAKE_FRAME]
-gcode:
-  ;SAVE_GCODE_STATE NAME=SNAPSHOT
-  ;M117 move your head/bed here, do retracts and so on
-  ;G4 P500 ;dwell
-  _TIMELAPSE_NEW_FRAME
-  ;G4 P500 ;moar dwelling
-  ;M117 don't forget to un-retract!
-  ;RESTORE_GCODE_STATE NAME=SNAPSHOT
-
-```
-Note: You can edit and add extra gcode to the TIMELASPE_TAKE_FRAME macro if you like to move your
-printhead to a specific position, before taking a picture.
-
-### Add the macro to your Slicer:
-Add the ``TIMELAPSE_TAKE_FRAME`` macro to your slicer so that it is added to the Gcode before or after a layer change.
-
-Note: Also add the macro to your End G-code to get a extra "finished print"
-frame.
-
-#### Prusa Slicer
-Printer Settings -> Custom G-code -> Before layer change Gcode -> ``TIMELAPSE_TAKE_FRAME``
-
-![PrusaSlicer Configuration](assets/img/timelapse-PS-config.png)
-
-#### Ultimaker Cura
-Extensions -> Post Processing -> Modify G-Code ->   
-Add a script -> Insert at layer change -> G-code to insert = ``TIMELAPSE_TAKE_FRAME``
-
-![Cura Configuration](assets/img/timelapse-cura-config.png)
-
-### Timebased frame capture
-If your slicer doesn't support support adding gcode at layer change or you like
-a timebased timelapse more add following to your printer.cfg:
-
-```ini
-# printer.cfg
-
-[delayed_gcode HYPERLAPSE_LOOP]
-gcode:
-  _HYPERLAPSE
-
-[gcode_macro _HYPERLAPSE]
-variable_cycle: 0
-gcode:
-  {% if cycle > 0 %}
-    _TIMELAPSE_NEW_FRAME
-    UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION={printer["gcode_macro _HYPERLAPSE"].cycle}
-  {% endif %}
-
-[gcode_macro HYPERLAPSE_START]
-variable_defaultcycle: 30  # edit the "cycle" time here (in seconds)
-gcode:
-  {% if params.VALUE is defined %}
-    SET_GCODE_VARIABLE MACRO=_HYPERLAPSE VARIABLE=cycle VALUE={params.VALUE}
-  {% else %}
-    SET_GCODE_VARIABLE MACRO=_HYPERLAPSE VARIABLE=cycle VALUE={printer["gcode_macro HYPERLAPSE_START"].defaultcycle}
-  {% endif %}
-  _HYPERLAPSE
-  
-[gcode_macro HYPERLAPSE_STOP]
-gcode:
-  UPDATE_DELAYED_GCODE ID=HYPERLAPSE_LOOP DURATION=0
-
-```
-then add ``HYPERLAPSE_START`` to your start gcode
-and ``HYPERLAPSE_STOP`` to your end gcode.
-
-## `[mqtt]`
+### `[mqtt]`
 
 Enables an MQTT Client.  When configured most of Moonraker's APIs are available
 by publishing JSON-RPC requests to `{instance_name}/moonraker/api/request`.
@@ -1751,7 +1621,7 @@ instance_name:
 status_objects:
 #   A newline separated list of Klipper objects whose state will be
 #   published.  There are two different ways to publish the states - you
-#   can use either or both depending on your need.  See the 
+#   can use either or both depending on your need.  See the
 #   "publish_split_status" options for details.
 #
 #   For example, this option could be set as follows:
@@ -1775,7 +1645,7 @@ status_objects:
 #   If not configured then no objects will be tracked and published to
 #   the klipper/status topic.
 publish_split_status: False
-#   Configures how to publish status updates to MQTT.  
+#   Configures how to publish status updates to MQTT.
 #
 #   When set to False (default), all Klipper object state updates will be
 #   published to a single mqtt state with the following topic:
@@ -2327,6 +2197,93 @@ ambient_sensor:
 
 More on how your data is used in the SimplyPrint privacy policy here;
 [https://simplyprint.io/legal/privacy](https://simplyprint.io/legal/privacy)
+
+### `[sensor]`
+
+Enables data collection from additional sensor sources.  Multiple "sensor"
+sources may be configured, each with their own section, ie: `[sensor current]`,
+`[sensor voltage]`.
+
+#### Options common to all sensor devices
+
+The following configuration options are available for all sensor types:
+
+```ini
+# moonraker.conf
+
+[sensor my_sensor]
+type:
+#   The type of device.  Supported types: mqtt
+#   This parameter must be provided.
+name:
+#   The friendly display name of the sensor.
+#   The default is the sensor source name.
+```
+
+#### MQTT Sensor Configuration
+
+The following options are available for `mqtt` sensor types:
+
+```ini
+# moonraker.conf
+
+qos:
+#  The MQTT QOS level to use when publishing and subscribing to topics.
+#  The default is to use the setting supplied in the [mqtt] section.
+state_topic:
+#  The mqtt topic to subscribe to for sensor state updates.  This parameter
+#  must be provided.
+state_response_template:
+#  A template used to parse the payload received with the state topic.  A
+#  "payload" variable is provided the template's context. This template must
+#  call the provided set_result() method to pass sensor values to Moonraker.
+#  `set_result()` expects two parameters, the name of the measurement (as
+#  string) and the value of the measurement (either integer or float number).
+#
+#  This allows for sensor that can return multiple readings (e.g. temperature/
+#  humidity sensors or powermeters).
+#  For example:
+#    {% set notification = payload|fromjson %}
+#    {set_result("temperature", notification["temperature"]|float)}
+#    {set_result("humidity", notification["humidity"]|float)}
+#    {set_result("pressure", notification["pressure"]|float)}
+#
+#  The above example assumes a json response with multiple fields in a struct
+#  is received. Individual measurements are extracted from that struct, coerced
+#  to a numeric format and passed to Moonraker. The default is the payload.
+```
+
+!!! Note
+    Moonraker's MQTT client must be properly configured to add a MQTT sensor.
+    See the [mqtt](#mqtt) section for details.
+
+!!! Tip
+    MQTT is the most robust way of collecting sensor data from networked
+    devices through Moonraker.  A well implemented MQTT sensor will publish all
+    changes in state to the `state_topic`.  Moonraker receives these changes,
+    updates its internal state, and notifies connected clients.
+
+Example:
+
+```ini
+# moonraker.conf
+
+# Example configuration for a Shelly Pro 1PM (Gen2) switch with
+# integrated power meter running the Shelly firmware over MQTT.
+[sensor mqtt_powermeter]
+type: mqtt
+name: Powermeter
+# Use a different display name
+state_topic: shellypro1pm-8cb113caba09/status/switch:0
+# The response is a JSON object with a multiple fields that we convert to
+# float values before passing them to Moonraker.
+state_response_template:
+  {% set notification = payload|fromjson %}
+  {set_result("power", notification["apower"]|float)}
+  {set_result("voltage", notification["voltage"]|float)}
+  {set_result("current", notification["current"]|float)}
+  {set_result("energy", notification["aenergy"]["by_minute"][0]|float * 0.000001)}
+```
 
 ## Include directives
 

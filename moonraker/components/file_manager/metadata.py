@@ -571,6 +571,8 @@ class Simplify3D(BaseSlicer):
     def check_identity(self, data: str) -> Optional[Dict[str, str]]:
         match = re.search(r"Simplify3D\(R\)\sVersion\s(.*)", data)
         if match:
+            self._version = match.group(1)
+            self._is_v5 = self._version.startswith("5")
             return {
                 'slicer': "Simplify3D",
                 'slicer_version': match.group(1)
@@ -590,19 +592,27 @@ class Simplify3D(BaseSlicer):
 
     def parse_filament_total(self) -> Optional[float]:
         return _regex_find_first(
-            r";\s+Filament\slength:\s(\d+\.?\d*)\smm", self.footer_data)
+            r";\s+(?:Filament\slength|Material\sLength):\s(\d+\.?\d*)\smm",
+            self.footer_data
+        )
 
     def parse_filament_weight_total(self) -> Optional[float]:
         return _regex_find_first(
-            r";\s+Plastic\sweight:\s(\d+\.?\d*)\sg", self.footer_data)
+            r";\s+(?:Plastic\sweight|Material\sWeight):\s(\d+\.?\d*)\sg",
+            self.footer_data
+        )
 
     def parse_filament_name(self) -> Optional[str]:
         return _regex_find_string(
             r";\s+printMaterial,(.*)", self.header_data)
 
+    def parse_filament_type(self) -> Optional[str]:
+        return _regex_find_string(
+            r";\s+makerBotModelMaterial,(.*)", self.footer_data)
+
     def parse_estimated_time(self) -> Optional[float]:
         time_match = re.search(
-            r';\s+Build time:.*', self.footer_data)
+            r';\s+Build (t|T)ime:.*', self.footer_data)
         if not time_match:
             return None
         total_time = 0
@@ -635,15 +645,37 @@ class Simplify3D(BaseSlicer):
                     return None
         return None
 
+    def _get_first_layer_temp_v5(self, heater_type: str) -> Optional[float]:
+        pattern = (
+            r";\s+temperatureController,.+?"
+            r";\s+temperatureType,"f"{heater_type}"r".+?"
+            r";\s+temperatureSetpoints,\d+\|(\d+)"
+        )
+        match = re.search(pattern, self.header_data, re.MULTILINE | re.DOTALL)
+        if match is not None:
+            try:
+                return float(match.group(1))
+            except Exception:
+                return None
+        return None
+
     def parse_first_layer_extr_temp(self) -> Optional[float]:
-        return self._get_first_layer_temp("Extruder 1")
+        if self._is_v5:
+            return self._get_first_layer_temp_v5("extruder")
+        else:
+            return self._get_first_layer_temp("Extruder 1")
 
     def parse_first_layer_bed_temp(self) -> Optional[float]:
-        return self._get_first_layer_temp("Heated Bed")
+        if self._is_v5:
+            return self._get_first_layer_temp_v5("platform")
+        else:
+            return self._get_first_layer_temp("Heated Bed")
 
     def parse_nozzle_diameter(self) -> Optional[float]:
         return _regex_find_first(
-            r";\s+extruderDiameter,(\d+\.\d*)", self.header_data)
+            r";\s+(?:extruderDiameter|nozzleDiameter),(\d+\.\d*)",
+            self.header_data
+        )
 
 class KISSlicer(BaseSlicer):
     def check_identity(self, data: str) -> Optional[Dict[str, Any]]:
@@ -976,6 +1008,8 @@ def process_objects(file_path: str, slicer: BaseSlicer, name: str) -> bool:
                 except Exception as e:
                     log_to_stderr(f"Object processing failed: {e}")
                     return False
+        if os.path.islink(file_path):
+            file_path = os.path.realpath(file_path)
         shutil.move(tmp_file, file_path)
     return True
 
@@ -1045,6 +1079,8 @@ def extract_ufp(ufp_path: str, dest_path: str) -> None:
                 if UFP_THUMB_PATH in zf.namelist():
                     tmp_thumb_path = zf.extract(
                         UFP_THUMB_PATH, path=tmp_dir_name)
+            if os.path.islink(dest_path):
+                dest_path = os.path.realpath(dest_path)
             shutil.move(tmp_model_path, dest_path)
             if tmp_thumb_path:
                 if not os.path.exists(dest_thumb_dir):

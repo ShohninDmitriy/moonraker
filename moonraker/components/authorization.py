@@ -34,8 +34,9 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from confighelper import ConfigHelper
-    from websockets import WebRequest, WebsocketManager
+    from ..confighelper import ConfigHelper
+    from ..common import WebRequest
+    from ..websockets import WebsocketManager
     from tornado.httputil import HTTPServerRequest
     from tornado.web import RequestHandler
     from .database import MoonrakerDatabase as DBComp

@@ -5,8 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from __future__ import annotations
-from utils import SentinelClass
-from websockets import WebRequest, Subscribable
+from ..utils import Sentinel
+from ..common import WebRequest, Subscribable
 
 # Annotation imports
 from typing import (
@@ -20,9 +20,8 @@ from typing import (
     Mapping,
 )
 if TYPE_CHECKING:
-    from confighelper import ConfigHelper
-    from websockets import WebRequest
-    from klippy_connection import KlippyConnection as Klippy
+    from ..confighelper import ConfigHelper
+    from ..klippy_connection import KlippyConnection as Klippy
     Subscription = Dict[str, Optional[List[Any]]]
     _T = TypeVar("_T")
 
@@ -35,7 +34,6 @@ SUBSCRIPTION_ENDPOINT = "objects/subscribe"
 STATUS_ENDPOINT = "objects/query"
 OBJ_LIST_ENDPOINT = "objects/list"
 REG_METHOD_ENDPOINT = "register_remote_method"
-SENTINEL = SentinelClass.get_instance()
 
 class KlippyAPI(Subscribable):
     def __init__(self, config: ConfigHelper) -> None:
@@ -84,20 +82,20 @@ class KlippyAPI(Subscribable):
         self,
         method: str,
         params: Dict[str, Any],
-        default: Any = SENTINEL
+        default: Any = Sentinel.MISSING
     ) -> Any:
         try:
             req = WebRequest(method, params, conn=self)
             result = await self.klippy.request(req)
         except self.server.error:
-            if isinstance(default, SentinelClass):
+            if default is Sentinel.MISSING:
                 raise
             result = default
         return result
 
     async def run_gcode(self,
                         script: str,
-                        default: Any = SENTINEL
+                        default: Any = Sentinel.MISSING
                         ) -> str:
         params = {'script': script}
         result = await self._send_klippy_request(
@@ -123,21 +121,21 @@ class KlippyAPI(Subscribable):
         return await self.run_gcode(script)
 
     async def pause_print(
-        self, default: Union[SentinelClass, _T] = SENTINEL
+        self, default: Union[Sentinel, _T] = Sentinel.MISSING
     ) -> Union[_T, str]:
         self.server.send_event("klippy_apis:pause_requested")
         return await self._send_klippy_request(
             "pause_resume/pause", {}, default)
 
     async def resume_print(
-        self, default: Union[SentinelClass, _T] = SENTINEL
+        self, default: Union[Sentinel, _T] = Sentinel.MISSING
     ) -> Union[_T, str]:
         self.server.send_event("klippy_apis:resume_requested")
         return await self._send_klippy_request(
             "pause_resume/resume", {}, default)
 
     async def cancel_print(
-        self, default: Union[SentinelClass, _T] = SENTINEL
+        self, default: Union[Sentinel, _T] = Sentinel.MISSING
     ) -> Union[_T, str]:
         self.server.send_event("klippy_apis:cancel_requested")
         return await self._send_klippy_request(
@@ -163,7 +161,7 @@ class KlippyAPI(Subscribable):
         return result
 
     async def list_endpoints(self,
-                             default: Union[SentinelClass, _T] = SENTINEL
+                             default: Union[Sentinel, _T] = Sentinel.MISSING
                              ) -> Union[_T, Dict[str, List[str]]]:
         return await self._send_klippy_request(
             LIST_EPS_ENDPOINT, {}, default)
@@ -173,7 +171,7 @@ class KlippyAPI(Subscribable):
 
     async def get_klippy_info(self,
                               send_id: bool = False,
-                              default: Union[SentinelClass, _T] = SENTINEL
+                              default: Union[Sentinel, _T] = Sentinel.MISSING
                               ) -> Union[_T, Dict[str, Any]]:
         params = {}
         if send_id:
@@ -182,28 +180,32 @@ class KlippyAPI(Subscribable):
         return await self._send_klippy_request(INFO_ENDPOINT, params, default)
 
     async def get_object_list(self,
-                              default: Union[SentinelClass, _T] = SENTINEL
+                              default: Union[Sentinel, _T] = Sentinel.MISSING
                               ) -> Union[_T, List[str]]:
         result = await self._send_klippy_request(
             OBJ_LIST_ENDPOINT, {}, default)
         if isinstance(result, dict) and 'objects' in result:
             return result['objects']
-        return result
+        if default is not Sentinel.MISSING:
+            return default
+        raise self.server.error("Invalid response received from Klippy", 500)
 
     async def query_objects(self,
                             objects: Mapping[str, Optional[List[str]]],
-                            default: Union[SentinelClass, _T] = SENTINEL
+                            default: Union[Sentinel, _T] = Sentinel.MISSING
                             ) -> Union[_T, Dict[str, Any]]:
         params = {'objects': objects}
         result = await self._send_klippy_request(
             STATUS_ENDPOINT, params, default)
         if isinstance(result, dict) and 'status' in result:
             return result['status']
-        return result
+        if default is not Sentinel.MISSING:
+            return default
+        raise self.server.error("Invalid response received from Klippy", 500)
 
     async def subscribe_objects(self,
                                 objects: Mapping[str, Optional[List[str]]],
-                                default: Union[SentinelClass, _T] = SENTINEL
+                                default: Union[Sentinel, _T] = Sentinel.MISSING
                                 ) -> Union[_T, Dict[str, Any]]:
         for obj, items in objects.items():
             if obj in self.host_subscription:
@@ -220,7 +222,9 @@ class KlippyAPI(Subscribable):
             SUBSCRIPTION_ENDPOINT, params, default)
         if isinstance(result, dict) and 'status' in result:
             return result['status']
-        return result
+        if default is not Sentinel.MISSING:
+            return default
+        raise self.server.error("Invalid response received from Klippy", 500)
 
     async def subscribe_gcode_output(self) -> str:
         template = {'response_template':

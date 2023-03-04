@@ -14,12 +14,11 @@ import pathlib
 import base64
 import tornado.websocket
 from tornado.escape import url_escape
-from websockets import Subscribable, WebRequest
-
 import logging.handlers
 import tempfile
 from queue import SimpleQueue
-from loghelper import LocalQueueHandler
+from ..loghelper import LocalQueueHandler
+from ..common import Subscribable, WebRequest
 
 from typing import (
     TYPE_CHECKING,
@@ -31,20 +30,21 @@ from typing import (
     Any,
 )
 if TYPE_CHECKING:
-    from app import InternalTransport
-    from confighelper import ConfigHelper
-    from websockets import WebsocketManager, BaseSocketClient
+    from ..app import InternalTransport
+    from ..confighelper import ConfigHelper
+    from ..websockets import WebsocketManager
+    from ..common import BaseRemoteConnection
     from tornado.websocket import WebSocketClientConnection
-    from components.database import MoonrakerDatabase
-    from components.klippy_apis import KlippyAPI
-    from components.job_state import JobState
-    from components.machine import Machine
-    from components.file_manager.file_manager import FileManager
-    from components.http_client import HttpClient
-    from components.power import PrinterPower
-    from components.announcements import Announcements
-    from components.webcam import WebcamManager, WebCam
-    from klippy_connection import KlippyConnection
+    from .database import MoonrakerDatabase
+    from .klippy_apis import KlippyAPI
+    from .job_state import JobState
+    from .machine import Machine
+    from .file_manager.file_manager import FileManager
+    from .http_client import HttpClient
+    from .power import PrinterPower
+    from .announcements import Announcements
+    from .webcam import WebcamManager, WebCam
+    from ..klippy_connection import KlippyConnection
 
 COMPONENT_VERSION = "0.0.1"
 SP_VERSION = "0.1"
@@ -610,7 +610,7 @@ class SimplyPrint(Subscribable):
             is_on = device_info["status"] == "on"
             self.send_sp("power_controller", {"on": is_on})
 
-    def _on_websocket_identified(self, ws: BaseSocketClient) -> None:
+    def _on_websocket_identified(self, ws: BaseRemoteConnection) -> None:
         if (
             self.cache.current_wsid is None and
             ws.client_data.get("type", "") == "web"
@@ -623,7 +623,7 @@ class SimplyPrint(Subscribable):
             self.cache.current_wsid = ws.uid
             self.send_sp("machine_data", ui_data)
 
-    def _on_websocket_removed(self, ws: BaseSocketClient) -> None:
+    def _on_websocket_removed(self, ws: BaseRemoteConnection) -> None:
         if self.cache.current_wsid is None or self.cache.current_wsid != ws.uid:
             return
         ui_data = self._get_ui_info()

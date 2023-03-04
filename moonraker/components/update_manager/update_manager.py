@@ -14,7 +14,7 @@ import zipfile
 import time
 import tempfile
 import re
-from thirdparty.packagekit import enums as PkEnum
+from ...thirdparty.packagekit import enums as PkEnum
 from . import base_config
 from .base_deploy import BaseDeploy
 from .app_deploy import AppDeploy
@@ -37,18 +37,18 @@ from typing import (
     cast
 )
 if TYPE_CHECKING:
-    from moonraker import Server
-    from confighelper import ConfigHelper
-    from websockets import WebRequest
-    from klippy_connection import KlippyConnection
-    from components.shell_command import ShellCommandFactory as SCMDComp
-    from components.database import MoonrakerDatabase as DBComp
-    from components.database import NamespaceWrapper
-    from components.dbus_manager import DbusManager
-    from components.machine import Machine
-    from components.http_client import HttpClient
-    from components.file_manager.file_manager import FileManager
-    from eventloop import FlexTimer
+    from ...server import Server
+    from ...confighelper import ConfigHelper
+    from ...common import WebRequest
+    from ...klippy_connection import KlippyConnection
+    from ..shell_command import ShellCommandFactory as SCMDComp
+    from ..database import MoonrakerDatabase as DBComp
+    from ..database import NamespaceWrapper
+    from ..dbus_manager import DbusManager
+    from ..machine import Machine
+    from ..http_client import HttpClient
+    from ..file_manager.file_manager import FileManager
+    from ...eventloop import FlexTimer
     from dbus_next import Variant
     from dbus_next.aio import ProxyInterface
     JsonType = Union[List[Any], Dict[str, Any]]
@@ -270,7 +270,7 @@ class UpdateManager:
             raise self.server.error("Update Refused: Klippy is printing")
         app: str = web_request.get_endpoint().split("/")[-1]
         if app == "client":
-            app = web_request.get('name')
+            app = web_request.get_str('name')
         if self.cmd_helper.is_app_updating(app):
             return f"Object {app} is currently being updated"
         updater = self.updaters.get(app, None)
@@ -708,7 +708,7 @@ class PackageDeploy(BaseDeploy):
         except shell_cmd.error:
             return None
         # APT Command found should be available
-        logging.debug(f"APT package manager detected: {ret.encode()}")
+        logging.debug(f"APT package manager detected: {ret}")
         provider = AptCliProvider(self.cmd_helper)
         try:
             await provider.initialize()

@@ -1766,7 +1766,7 @@ A list of objects, where each object contains file data:
 ]
 ```
 
-#### Get gcode metadata
+#### Get GCode Metadata
 
 Get metadata for a specified gcode file.
 
@@ -1834,12 +1834,46 @@ modified time, and size.
     "filename": "3DBenchy_0.15mm_PLA_MK3S_2h6m.gcode"
 }
 ```
-!!! note
+!!! Note
     The `print_start_time` and `job_id` fields are initialized to
     `null`.  They will be updated for each print job if the user has the
     `[history]` component configured
 
-#### Get Gcode Thumbnails
+#### Scan GCode Metadata
+
+Initiate a metadata scan for a selected file.  If the file has already
+been scanned the endpoint will force a rescan
+
+HTTP request:
+```http
+GET /server/files/metascan?filename={filename}
+```
+
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "server.files.metascan",
+    "params": {
+        "filename": "{filename}"
+    },
+    "id": 3545
+}
+```
+
+Parameters:
+
+- `filename`: Path to the gcode file, relative to the `gcodes` root.
+  For example, if the file is located at
+  `http://host/server/files/gcodes/tools/drill_head.gcode`,
+  the `filename` should be specified as `tools/drill_head.gcode`
+
+Returns:
+
+- An object containing the metadata resulting from the scan, matching
+  the return value of the [Get Metdata Endpoint](#get-gcode-metadata).
+
+#### Get GCode Thumbnails
 
 Returns thumbnail information for a supplied gcode file. If no thumbnail
 information is available
@@ -2011,8 +2045,12 @@ Returns: Information about the created directory
 ```json
 {
     "item": {
-        "path": "gcodes/testdir",
-        "root": "gcodes"
+        "path": "my_new_dir",
+        "root": "gcodes",
+        "modified": 1676983427.3732708,
+        "size": 4096,
+        "permissions": "rw"
+
     },
     "action": "create_dir"
 }
@@ -2031,7 +2069,7 @@ JSON-RPC request:
     "jsonrpc": "2.0",
     "method": "server.files.delete_directory",
     "params": {
-        "path": "gcodes/my_new_dir",
+        "path": "gcodes/my_subdir",
         "force": false
     },
     "id": 6545
@@ -2045,8 +2083,12 @@ Returns:  Information about the deleted directory
 ```json
 {
     "item": {
-        "path": "gcodes/testdir",
-        "root": "gcodes"
+        "path": "my_subdir",
+        "root": "gcodes",
+        "modified": 0,
+        "size": 0,
+        "permissions": ""
+
     },
     "action": "delete_dir"
 }
@@ -2068,11 +2110,13 @@ and `config`".
 
 This API may also be used to rename a file or directory.   Be aware that an
 attempt to rename a directory to a directory that already exists will result
-in *moving* the source directory into the destination directory.
+in *moving* the source directory into the destination directory.  Also be aware
+that renaming a file to a file that already exists will result in overwriting
+the existing file.
 
 HTTP request:
 ```http
-POST /server/files/move?source=gcodes/my_file.gcode&dest=gcodes/subdir/my_file.gcode
+POST /server/files/move?source=gcodes/testdir/my_file.gcode&dest=gcodes/subdir/my_file.gcode
 ```
 JSON-RPC request:
 ```json
@@ -2080,7 +2124,7 @@ JSON-RPC request:
     "jsonrpc": "2.0",
     "method": "server.files.move",
     "params": {
-        "source": "gcodes/my_file.gcode",
+        "source": "gcodes/testdir/my_file.gcode",
         "dest": "gcodes/subdir/my_file.gcode"
     },
     "id": 5664
@@ -2093,16 +2137,25 @@ Returns:  Information about the moved file or directory
     "result": {
         "item": {
             "root": "gcodes",
-            "path": "test4/test3"
+            "path": "subdir/my_file.gcode",
+            "modified": 1676940082.8595376,
+            "size": 384096,
+            "permissions": "rw"
         },
         "source_item": {
-            "path": "gcodes/test4/test3",
+            "path": "testdir/my_file.gcode",
             "root": "gcodes"
         },
-        "action": "move_dir"
+        "action": "move_file"
     }
 }
 ```
+
+!!! Note
+    The `item` field contains file info for the destination.  The `source_item`
+    contains the `path` and `root` the item was moved from.  The `action` field
+    will be `move_file` if the source is a file or `move_dir` if the source is
+    a directory.
 
 #### Copy a file or directory
 Copies a file or directory from one location to another.  A successful copy has
@@ -2132,11 +2185,19 @@ Returns: Information about the copied file or directory
 {
     "item": {
         "root": "gcodes",
-        "path": "test4/Voron_v2_350_afterburner_Filament Cover_0.2mm_ABS.gcode"
+        "path": "subdir/my_file.gcode",
+        "modified": 1676940082.8595376,
+        "size": 384096,
+        "permissions": "rw"
     },
     "action": "create_file"
 }
 ```
+
+!!! Note
+    The `item` field contains file info for the destination.  The `action` field
+    will be `create_file` if a new file was created, `modify_file` if an exiting
+    file was overwitten, or `create_dir` if an entire directory was copied.
 
 #### Create a ZIP archive
 
@@ -2199,7 +2260,10 @@ Returns:  An object in the following format:
 {
     "destination": {
         "root": "config",
-        "path": "errorlogs.zip"
+        "path": "errorlogs.zip",
+        "modified": 1676984423.8892415,
+        "size": 420,
+        "permissions": "rw"
     },
     "action": "zip_files"
 }
@@ -2272,9 +2336,13 @@ is only included when the supplied root is set to `gcodes`.
 {
     "item": {
         "path": "Lock Body Shim 1mm_0.2mm_FLEX_MK3S_2h30m.gcode",
-        "root": "gcodes"
+        "root": "gcodes",
+        "modified": 1676984527.636818,
+        "size": 71973,
+        "permissions": "rw"
     },
     "print_started": false,
+    "print_queued": false,
     "action": "create_file"
 }
 ```
@@ -2303,13 +2371,22 @@ Returns:  Information about the deleted file
 {
     "item": {
         "path": "Lock Body Shim 1mm_0.2mm_FLEX_MK3S_2h30m.gcode",
-        "root": "gcodes"
+        "root": "gcodes",
+        "size": 0,
+        "modified": 0,
+        "permissions": ""
     },
     "action": "delete_file"
 }
 ```
 
 #### Download klippy.log
+!!! Note
+    Logs are now available in the `logs` root.  Front ends should consider
+    presenting all available logs using "file manager" type of UI.  That said,
+    If Klipper has not been configured to write logs in the `logs` root then
+    this endpoint is available as a fallback.
+
 HTTP request:
 ```http
 GET /server/files/klippy.log
@@ -2321,6 +2398,12 @@ Returns:
 The requested file
 
 #### Download moonraker.log
+!!! Note
+    Logs are now available in the `logs` root.  Front ends should consider
+    presenting all available logs using "file manager" type of UI.  That said,
+    If Moonraker has not been configured to write logs in the `logs` root then
+    this endpoint is available as a fallback.
+
 HTTP request:
 ```http
 GET /server/files/moonraker.log
@@ -4915,6 +4998,154 @@ State of the strip.
 }
 ```
 
+### Sensor APIs
+The APIs below are available when the `[sensor]` component has been configured.
+
+#### Get Sensor List
+HTTP request:
+```http
+GET /server/sensors/list
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method":"server.sensors.list",
+    "id": 5646
+}
+```
+Returns:
+
+An array of objects containing info for each configured sensor.
+```json
+{
+    "sensors": {
+        "sensor1": {
+            "id": "sensor1",
+            "friendly_name": "Sensor 1",
+            "type": "mqtt",
+            "values": {
+                "value1": 0,
+                "value2": 119.8
+            }
+        }
+    }
+}
+```
+
+#### Get Sensor Information
+Returns the status for a single configured sensor.
+
+HTTP request:
+```http
+GET /server/sensors/info?sensor=sensor1
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "server.sensors.info",
+    "params": {
+        "sensor": "sensor1"
+    },
+    "id": 4564
+}
+```
+Returns:
+
+An object containing sensor information for the requested sensor:
+```json
+{
+    "id": "sensor1",
+    "friendly_name": "Sensor 1",
+    "type": "mqtt",
+    "values": {
+        "value1": 0.0,
+        "value2": 120.0
+    }
+}
+```
+
+#### Get Sensor Measurements
+Returns all recorded measurements for a configured sensor.
+
+HTTP request:
+```http
+GET /server/sensors/measurements?sensor=sensor1
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "server.sensors.measurements",
+    "params": {
+        "sensor": "sensor1"
+    },
+    "id": 4564
+}
+```
+Returns:
+
+An object containing all recorded measurements for the requested sensor:
+```json
+{
+    "sensor1": {
+        "value1": [
+            3.1,
+            3.2,
+            3.0
+        ],
+        "value2": [
+            120.0,
+            120.0,
+            119.9
+        ]
+    }
+}
+```
+
+#### Get Batch Sensor Measurements
+Returns recorded measurements for all sensors.
+
+HTTP request:
+```http
+GET /server/sensors/measurements
+```
+JSON-RPC request:
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "server.sensors.measurements",
+    "id": 4564
+}
+```
+Returns:
+
+An object containing all measurements for every configured sensor:
+```json
+{
+    "sensor1": {
+        "value1": [
+            3.1,
+            3.2,
+            3.0
+        ],
+        "value2": [
+            120.0,
+            120.0,
+            119.9
+        ]
+    },
+    "sensor2": {
+        "value_a": [
+            1,
+            1,
+            0
+        ]
+    }
+}
+```
+
 ### OctoPrint API emulation
 Partial support of OctoPrint API is implemented with the purpose of
 allowing uploading of sliced prints to a moonraker instance.
@@ -5841,22 +6072,26 @@ to alert all connected clients of the change:
         {
             "action": "{action}",
             "item": {
-                "path": "{file or directory path}",
+                "path": "{file or directory path relative to root}",
                 "root": "{root}",
                 "size": 46458,
-                "modified": 545465
+                "modified": 545465,
+                "permissions": "rw"
             },
             "source_item": {
-                "path": "{file or directory path}",
+                "path": "{file or directory path relative to root}",
                 "root": "{root_name}"
             }
         }
     ]
 }
 ```
-The `source_item` field is only present for `move_item` and
-`copy_item` actions.  The `action` field will be set
-to one of the following values:
+
+!!! Note
+    The `source_item` field is only present for `move_file` and
+    `move_dir` actions.
+
+The `action` field will be set to one of the following values:
 
 - `create_file`
 - `create_dir`
@@ -5868,9 +6103,16 @@ to one of the following values:
 - `root_update`
 
 Most of the above actions are self explanatory.  The `root_update`
-notification is sent when a `root` folder has changed its location,
-for example when a user configures a different gcode file path
-in Klipper.
+notification is sent when a `root` folder has changed its location.
+This should be a rare event as folders are now managed in using the
+data folder structure.
+
+Notifications are bundled where applicable.  For example, when a
+directory containing children is deleted a single `delete_dir` notification
+is pushed.  Likewise, when a directory is moved or copied, a single
+`move_dir` or `create_dir` notification is pushed.  Children that are
+moved, copied, or deleted as a result of a parent's action will
+not receive individual notifications.
 
 #### Update Manager Response
 The update manager will send asynchronous messages to the client during an
@@ -6289,6 +6531,31 @@ for that agent, with its identity info in the `data` field.  When an agent
 disconnects clients will receive a `disconnected` event with the data field
 omitted.  All other events are determined by the agent, where each event may
 or may not include optional `data`.
+
+#### Sensor Events
+
+Moonraker will emit a `sensors:sensor_update` notification when a measurement
+from at least one monitored sensor changes.
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "sensors:sensor_update",
+    "params": [
+        {
+            "sensor1": {
+                "humidity": 28.9,
+                "temperature": 22.4
+            }
+        }
+    ]
+}
+```
+
+When a sensor reading changes, all connections will receive a
+`sensors:sensor_update` event where the params contains a data struct
+with the sensor id as the key and the sensors letest measurements as value
+struct.
 
 ### Appendix
 

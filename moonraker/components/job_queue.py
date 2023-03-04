@@ -19,8 +19,8 @@ from typing import (
     Union,
 )
 if TYPE_CHECKING:
-    from confighelper import ConfigHelper
-    from websockets import WebRequest
+    from ..confighelper import ConfigHelper
+    from ..common import WebRequest
     from .klippy_apis import KlippyAPI
     from .file_manager.file_manager import FileManager
 
@@ -251,20 +251,15 @@ class JobQueue:
                                   ) -> Dict[str, Any]:
         action = web_request.get_action()
         if action == "POST":
-            files: Union[List[str], str] = web_request.get('filenames')
+            files = web_request.get_list('filenames')
             reset = web_request.get_boolean("reset", False)
-            if isinstance(files, str):
-                files = [f.strip() for f in files.split(',') if f.strip()]
             # Validate that all files exist before queueing
             await self.queue_job(files, reset=reset)
         elif action == "DELETE":
             if web_request.get_boolean("all", False):
                 await self.delete_job([], all=True)
             else:
-                job_ids: Union[List[str], str] = web_request.get('job_ids')
-                if isinstance(job_ids, str):
-                    job_ids = [f.strip() for f in job_ids.split(',')
-                               if f.strip()]
+                job_ids = web_request.get_list('job_ids')
                 await self.delete_job(job_ids)
         else:
             raise self.server.error(f"Invalid action: {action}")
