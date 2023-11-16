@@ -358,11 +358,11 @@ class SimplyPrint(Subscribable):
         elif demand == "gcode":
             if not kconn.is_connected():
                 return
-            script_list = args.get("list", [])
+            script_list: List[str] = args.get("list", [])
+            ident: Optional[str] = args.get("identifier", None)
             if script_list:
                 script = "\n".join(script_list)
-                coro = self.klippy_apis.run_gcode(script, None)
-                self.eventloop.create_task(coro)
+                self.eventloop.create_task(self._handle_gcode_demand(script, ident))
         elif demand == "webcam_snapshot":
             self.eventloop.create_task(self.webcam_stream.post_image(args))
         elif demand == "file":
@@ -406,6 +406,26 @@ class SimplyPrint(Subscribable):
         else:
             self.sp_info[name] = data
             self.spdb[name] = data
+
+    async def _handle_gcode_demand(
+        self, script: str, ident: Optional[str]
+    ) -> None:
+        success: bool = True
+        msg: Optional[str] = None
+        try:
+            await self.klippy_apis.run_gcode(script)
+        except self.server.error as e:
+            msg = str(e)
+            success = False
+        if ident is not None:
+            self.send_sp(
+                "gcode_executed",
+                {
+                    "identifier": ident,
+                    "success": success,
+                    "message": msg
+                }
+            )
 
     async def _call_internal_api(self, method: str, **kwargs) -> Any:
         itransport: InternalTransport
@@ -793,10 +813,12 @@ class SimplyPrint(Subscribable):
             mem_pct = sys_mem["used"] / sys_mem["total"] * 100
         cpu_data = {
             "usage": int(cpu["cpu"] + .5),
-            "temp": int(proc_stats["cpu_temp"] + .5),
             "memory": int(mem_pct + .5),
             "flags": self.cache.throttled_state.get("bits", 0)
         }
+        temp: Optional[float] = proc_stats["cpu_temp"]
+        if temp is not None:
+            cpu_data["temp"] = int(temp + .5)
         diff = self._get_object_diff(cpu_data, self.cache.cpu_info)
         if diff:
             self.cache.cpu_info.update(cpu_data)
