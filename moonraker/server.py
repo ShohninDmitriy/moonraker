@@ -25,6 +25,8 @@ from .app import MoonrakerApp
 from .klippy_connection import KlippyConnection
 from .utils import ServerError, Sentinel, get_software_info, json_wrapper
 from .loghelper import LogManager
+from .common import RequestType
+from .websockets import WebsocketManager
 
 # Annotation imports
 from typing import (
@@ -41,7 +43,6 @@ from typing import (
 )
 if TYPE_CHECKING:
     from .common import WebRequest
-    from .websockets import WebsocketManager
     from .components.file_manager.file_manager import FileManager
     from .components.machine import Machine
     from .components.extensions import ExtensionManager
@@ -91,22 +92,25 @@ class Server:
 
         # Tornado Application/Server
         self.moonraker_app = app = MoonrakerApp(config)
-        self.register_endpoint = app.register_local_handler
-        self.register_debug_endpoint = app.register_debug_handler
+        self.register_endpoint = app.register_endpoint
+        self.register_debug_endpoint = app.register_debug_endpoint
         self.register_static_file_handler = app.register_static_file_handler
         self.register_upload_handler = app.register_upload_handler
-        self.register_api_transport = app.register_api_transport
         self.log_manager.set_server(self)
+        self.websocket_manager = WebsocketManager(config)
 
         for warning in args.get("startup_warnings", []):
             self.add_warning(warning)
 
         self.register_endpoint(
-            "/server/info", ['GET'], self._handle_info_request)
+            "/server/info", RequestType.GET, self._handle_info_request
+        )
         self.register_endpoint(
-            "/server/config", ['GET'], self._handle_config_request)
+            "/server/config", RequestType.GET, self._handle_config_request
+        )
         self.register_endpoint(
-            "/server/restart", ['POST'], self._handle_server_restart)
+            "/server/restart", RequestType.POST, self._handle_server_restart
+        )
         self.register_notification("server:klippy_ready")
         self.register_notification("server:klippy_shutdown")
         self.register_notification("server:klippy_disconnect",
@@ -305,8 +309,7 @@ class Server:
     def register_notification(
         self, event_name: str, notify_name: Optional[str] = None
     ) -> None:
-        wsm: WebsocketManager = self.lookup_component("websockets")
-        wsm.register_notification(event_name, notify_name)
+        self.websocket_manager.register_notification(event_name, notify_name)
 
     def register_event_handler(
         self, event: str, callback: FlexCallback
@@ -364,9 +367,6 @@ class Server:
     def get_klippy_info(self) -> Dict[str, Any]:
         return self.klippy_connection.klippy_info
 
-    def get_klippy_state(self) -> str:
-        return self.klippy_connection.state
-
     def _handle_term_signal(self) -> None:
         logging.info("Exiting with signal SIGTERM")
         self.event_loop.register_callback(self._stop_server, "terminate")
@@ -390,6 +390,7 @@ class Server:
         await asyncio.sleep(.1)
         try:
             await self.moonraker_app.close()
+            await self.websocket_manager.close()
         except Exception:
             logging.exception("Error Closing App")
 
@@ -433,7 +434,6 @@ class Server:
         reg_dirs = []
         if file_manager is not None:
             reg_dirs = file_manager.get_registered_dirs()
-        wsm: WebsocketManager = self.lookup_component('websockets')
         mreqs = self.klippy_connection.missing_requirements
         if raw:
             warnings = list(self.warnings.values())
@@ -443,12 +443,12 @@ class Server:
             ]
         return {
             'klippy_connected': self.klippy_connection.is_connected(),
-            'klippy_state': self.klippy_connection.state,
+            'klippy_state': str(self.klippy_connection.state),
             'components': list(self.components.keys()),
             'failed_components': self.failed_components,
             'registered_directories': reg_dirs,
             'warnings': warnings,
-            'websocket_count': wsm.get_count(),
+            'websocket_count': self.websocket_manager.get_count(),
             'moonraker_version': self.app_args['software_version'],
             'missing_klippy_requirements': mreqs,
             'api_version': API_VERSION,

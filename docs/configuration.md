@@ -936,6 +936,9 @@ password: mypassword
 
 The following options are available for `shelly` device types:
 
+!!! Note
+    Currently only Gen 1 Shelly devices support Authentication
+
 ```ini
 # moonraker.conf
 
@@ -1266,6 +1269,10 @@ The following options are available for `hue` device types:
 address:
 #   A valid ip address or hostname of the Philips Hue Bridge. This
 #   parameter must be provided.
+port:
+#   A port number if an alternative Zigbee bridge is used on a HTTP port 
+#   different from the default 80/443
+#   
 user:
 #   The api key used for request authorization.  This option accepts
 #   Jinja2 Templates, see the [secrets] section for details.

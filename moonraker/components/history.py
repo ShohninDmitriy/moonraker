@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 import logging
 from asyncio import Lock
+from ..common import JobEvent, RequestType
 
 # Annotation imports
 from typing import (
@@ -49,26 +50,23 @@ class History:
         self.server.register_event_handler(
             "server:klippy_shutdown", self._handle_shutdown)
         self.server.register_event_handler(
-            "job_state:started", self._on_job_started)
-        self.server.register_event_handler(
-            "job_state:complete", self._on_job_complete)
-        self.server.register_event_handler(
-            "job_state:cancelled", self._on_job_cancelled)
-        self.server.register_event_handler(
-            "job_state:standby", self._on_job_standby)
-        self.server.register_event_handler(
-            "job_state:error", self._on_job_error)
+            "job_state:state_changed", self._on_job_state_changed)
         self.server.register_notification("history:history_changed")
 
         self.server.register_endpoint(
-            "/server/history/job", ['GET', 'DELETE'], self._handle_job_request)
+            "/server/history/job", RequestType.GET | RequestType.DELETE,
+            self._handle_job_request
+        )
         self.server.register_endpoint(
-            "/server/history/list", ['GET'], self._handle_jobs_list)
+            "/server/history/list", RequestType.GET, self._handle_jobs_list
+        )
         self.server.register_endpoint(
-            "/server/history/totals", ['GET'], self._handle_job_totals)
+            "/server/history/totals", RequestType.GET, self._handle_job_totals
+        )
         self.server.register_endpoint(
-            "/server/history/reset_totals", ['POST'],
-            self._handle_job_total_reset)
+            "/server/history/reset_totals", RequestType.POST,
+            self._handle_job_total_reset
+        )
 
         database.register_local_namespace(HIST_NAMESPACE)
         self.history_ns = database.wrap_namespace(HIST_NAMESPACE,
@@ -85,14 +83,14 @@ class History:
                                   web_request: WebRequest
                                   ) -> Dict[str, Any]:
         async with self.request_lock:
-            action = web_request.get_action()
-            if action == "GET":
+            req_type = web_request.get_request_type()
+            if req_type == RequestType.GET:
                 job_id = web_request.get_str("uid")
                 if job_id not in self.cached_job_ids:
                     raise self.server.error(f"Invalid job uid: {job_id}", 404)
                 job = await self.history_ns[job_id]
                 return {"job": self._prep_requested_job(job, job_id)}
-            if action == "DELETE":
+            if req_type == RequestType.DELETE:
                 all = web_request.get_boolean("all", False)
                 if all:
                     deljobs = self.cached_job_ids
@@ -192,40 +190,25 @@ class History:
             "moonraker", "history.job_totals", self.job_totals)
         return {'last_totals': last_totals}
 
-    def _on_job_started(self,
-                        prev_stats: Dict[str, Any],
-                        new_stats: Dict[str, Any]
-                        ) -> None:
-        if self.current_job is not None:
-            # Finish with the previous state
+    def _on_job_state_changed(
+        self,
+        job_event: JobEvent,
+        prev_stats: Dict[str, Any],
+        new_stats: Dict[str, Any]
+    ) -> None:
+        if job_event == JobEvent.STARTED:
+            if self.current_job is not None:
+                # Finish with the previous state
+                self.finish_job("cancelled", prev_stats)
+            self.add_job(PrinterJob(new_stats))
+        elif job_event == JobEvent.COMPLETE:
+            self.finish_job("completed", new_stats)
+        elif job_event == JobEvent.ERROR:
+            self.finish_job("error", new_stats)
+        elif job_event in (JobEvent.CANCELLED, JobEvent.STANDBY):
+            # Cancel on "standby" for backward compatibility with
+            # `CLEAR_PAUSE/SDCARD_RESET_FILE` workflow
             self.finish_job("cancelled", prev_stats)
-        self.add_job(PrinterJob(new_stats))
-
-    def _on_job_complete(self,
-                         prev_stats: Dict[str, Any],
-                         new_stats: Dict[str, Any]
-                         ) -> None:
-        self.finish_job("completed", new_stats)
-
-    def _on_job_cancelled(self,
-                          prev_stats: Dict[str, Any],
-                          new_stats: Dict[str, Any]
-                          ) -> None:
-        self.finish_job("cancelled", new_stats)
-
-    def _on_job_error(self,
-                      prev_stats: Dict[str, Any],
-                      new_stats: Dict[str, Any]
-                      ) -> None:
-        self.finish_job("error", new_stats)
-
-    def _on_job_standby(self,
-                        prev_stats: Dict[str, Any],
-                        new_stats: Dict[str, Any]
-                        ) -> None:
-        # Backward compatibility with
-        # `CLEAR_PAUSE/SDCARD_RESET_FILE` workflow
-        self.finish_job("cancelled", prev_stats)
 
     def _handle_shutdown(self) -> None:
         jstate: JobState = self.server.lookup_component("job_state")
