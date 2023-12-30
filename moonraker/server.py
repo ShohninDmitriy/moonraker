@@ -585,6 +585,7 @@ def main(from_package: bool = True) -> None:
     else:
         app_args["log_file"] = str(data_path.joinpath("logs/moonraker.log"))
     app_args["python_version"] = sys.version.replace("\n", " ")
+    app_args["launch_args"] = " ".join([sys.executable] + sys.argv).strip()
     app_args["msgspec_enabled"] = json_wrapper.MSGSPEC_ENABLED
     app_args["uvloop_enabled"] = EventLoop.UVLOOP_ENABLED
     log_manager = LogManager(app_args, startup_warnings)
@@ -641,6 +642,7 @@ def main(from_package: bool = True) -> None:
         # it is ok to use a blocking sleep here
         time.sleep(.5)
         logging.info("Attempting Server Restart...")
+        del server
         event_loop.reset()
     event_loop.close()
     logging.info("Server Shutdown")
