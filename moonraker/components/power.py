@@ -33,9 +33,8 @@ if TYPE_CHECKING:
     from .machine import Machine
     from .klippy_apis import KlippyAPI as APIComp
     from .mqtt import MQTTClient
-    from .template import JinjaTemplate
     from .http_client import HttpClient
-    from klippy_connection import KlippyConnection
+    from .klippy_connection import KlippyConnection
 
 class PrinterPower:
     def __init__(self, config: ConfigHelper) -> None:
@@ -1207,7 +1206,7 @@ class MQTTDevice(PowerDevice):
         self.mqtt: MQTTClient = self.server.load_component(config, 'mqtt')
         self.eventloop = self.server.get_event_loop()
         self.cmd_topic: str = config.get('command_topic')
-        self.cmd_payload: JinjaTemplate = config.gettemplate('command_payload')
+        self.cmd_payload = config.gettemplate('command_payload')
         self.retain_cmd_state = config.getboolean('retain_command_state', False)
         self.query_topic: Optional[str] = config.get('query_topic', None)
         self.query_payload = config.gettemplate('query_payload', None)

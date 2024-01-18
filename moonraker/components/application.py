@@ -19,11 +19,12 @@ import tornado.web
 from asyncio import Lock
 from inspect import isclass
 from tornado.escape import url_unescape, url_escape
-from tornado.routing import Rule, PathMatches, AnyMatches
+from tornado.routing import Rule, PathMatches, RuleRouter
 from tornado.http1connection import HTTP1Connection
+from tornado.httpserver import HTTPServer
 from tornado.log import access_log
-from .utils import ServerError, source_info, parse_ip_address
-from .common import (
+from ..utils import ServerError, source_info, parse_ip_address
+from ..common import (
     JsonRPC,
     WebRequest,
     APIDefinition,
@@ -32,12 +33,7 @@ from .common import (
     RequestType,
     KlippyState
 )
-from .utils import json_wrapper as jsonw
-from .websockets import (
-    WebsocketManager,
-    WebSocket,
-    BridgeSocket
-)
+from ..utils import json_wrapper as jsonw
 from streaming_form_data import StreamingFormDataParser, ParseFailedException
 from streaming_form_data.targets import FileTarget, ValueTarget, SHA256Target
 
@@ -52,20 +48,23 @@ from typing import (
     Dict,
     List,
     AsyncGenerator,
+    Type
 )
 if TYPE_CHECKING:
-    from tornado.httpserver import HTTPServer
-    from .server import Server
-    from .eventloop import EventLoop
-    from .confighelper import ConfigHelper
+    from tornado.websocket import WebSocketHandler
+    from tornado.httputil import HTTPMessageDelegate, HTTPServerRequest
+    from ..server import Server
+    from ..eventloop import EventLoop
+    from ..confighelper import ConfigHelper
     from .klippy_connection import KlippyConnection as Klippy
-    from .utils import IPAddress
-    from .components.file_manager.file_manager import FileManager
-    from .components.announcements import Announcements
-    from .components.machine import Machine
+    from ..utils import IPAddress
+    from .websockets import WebsocketManager, WebSocket
+    from .file_manager.file_manager import FileManager
+    from .announcements import Announcements
+    from .machine import Machine
     from io import BufferedReader
-    from .components.authorization import Authorization
-    from .components.template import TemplateFactory, JinjaTemplate
+    from .authorization import Authorization
+    from .template import TemplateFactory, JinjaTemplate
     MessageDelgate = Optional[tornado.httputil.HTTPMessageDelegate]
     AuthComp = Optional[Authorization]
     APICallback = Callable[[WebRequest], Coroutine]
@@ -78,8 +77,8 @@ EXCLUDED_ARGS = ["_", "token", "access_token", "connection_id"]
 AUTHORIZED_EXTS = [".png", ".jpg"]
 DEFAULT_KLIPPY_LOG_PATH = "/tmp/klippy.log"
 
-class MutableRouter(tornado.web.ReversibleRuleRouter):
-    def __init__(self, application: MoonrakerApp) -> None:
+class MutableRouter(RuleRouter):
+    def __init__(self, application: tornado.web.Application) -> None:
         self.application = application
         self.pattern_to_rule: Dict[str, Rule] = {}
         super(MutableRouter, self).__init__(None)
@@ -91,8 +90,8 @@ class MutableRouter(tornado.web.ReversibleRuleRouter):
                             ) -> MessageDelgate:
         if isclass(target) and issubclass(target, tornado.web.RequestHandler):
             return self.application.get_handler_delegate(
-                request, target, **target_params)
-
+                request, target, **target_params
+            )
         return super(MutableRouter, self).get_target_delegate(
             target, request, **target_params)
 
@@ -102,7 +101,7 @@ class MutableRouter(tornado.web.ReversibleRuleRouter):
     def add_handler(self,
                     pattern: str,
                     target: Any,
-                    target_params: Optional[Dict[str, Any]]
+                    target_params: Optional[Dict[str, Any]] = None
                     ) -> None:
         if pattern in self.pattern_to_rule:
             self.remove_handler(pattern)
@@ -118,6 +117,56 @@ class MutableRouter(tornado.web.ReversibleRuleRouter):
             except Exception:
                 logging.exception(f"Unable to remove rule: {pattern}")
 
+class PrimaryRouter(MutableRouter):
+    def __init__(self, config: ConfigHelper) -> None:
+        server = config.get_server()
+        max_ws_conns = config.getint('max_websocket_connections', MAX_WS_CONNS_DEFAULT)
+        self.verbose_logging = server.is_verbose_enabled()
+        app_args: Dict[str, Any] = {
+            'serve_traceback': self.verbose_logging,
+            'websocket_ping_interval': 10,
+            'websocket_ping_timeout': 30,
+            'server': server,
+            'max_websocket_connections': max_ws_conns,
+            'log_function': self.log_request
+        }
+        super().__init__(tornado.web.Application(**app_args))
+
+    @property
+    def tornado_app(self) -> tornado.web.Application:
+        return self.application
+
+    def find_handler(
+        self, request: HTTPServerRequest, **kwargs: Any
+    ) -> Optional[HTTPMessageDelegate]:
+        hdlr = super().find_handler(request, **kwargs)
+        if hdlr is not None:
+            return hdlr
+        return self.application.get_handler_delegate(request, AuthorizedErrorHandler)
+
+    def log_request(self, handler: tornado.web.RequestHandler) -> None:
+        status_code = handler.get_status()
+        if (
+            not self.verbose_logging and
+            status_code in [200, 204, 206, 304]
+        ):
+            # don't log successful requests in release mode
+            return
+        if status_code < 400:
+            log_method = access_log.info
+        elif status_code < 500:
+            log_method = access_log.warning
+        else:
+            log_method = access_log.error
+        request_time = 1000.0 * handler.request.request_time()
+        user = handler.current_user
+        username = "No User"
+        if user is not None and 'username' in user:
+            username = user['username']
+        log_method(
+            f"{status_code} {handler._request_summary()} "
+            f"[{username}] {request_time:.2f}ms"
+        )
 
 class InternalTransport(APITransport):
     def __init__(self, server: Server) -> None:
@@ -151,9 +200,6 @@ class MoonrakerApp:
         ]
         self.max_upload_size = config.getint('max_upload_size', 1024)
         self.max_upload_size *= 1024 * 1024
-        max_ws_conns = config.getint(
-            'max_websocket_connections', MAX_WS_CONNS_DEFAULT
-        )
 
         # SSL config
         self.cert_path: pathlib.Path = self._get_path_option(
@@ -182,30 +228,14 @@ class MoonrakerApp:
         mimetypes.add_type('text/plain', '.gcode')
         mimetypes.add_type('text/plain', '.cfg')
 
-        app_args: Dict[str, Any] = {
-            'serve_traceback': self.server.is_verbose_enabled(),
-            'websocket_ping_interval': 10,
-            'websocket_ping_timeout': 30,
-            'server': self.server,
-            'max_websocket_connections': max_ws_conns,
-            'default_handler_class': AuthorizedErrorHandler,
-            'default_handler_args': {},
-            'log_function': self.log_request,
-            'compiled_template_cache': False,
-        }
-
-        # Set up HTTP only requests
-        self.mutable_router = MutableRouter(self)
-        app_handlers: List[Any] = [
-            (AnyMatches(), self.mutable_router),
+        # Set up HTTP routing.  Our "mutable_router" wraps a Tornado Application
+        self.mutable_router = PrimaryRouter(config)
+        for (ptrn, hdlr) in (
             (home_pattern, WelcomeHandler),
-            (f"{self._route_prefix}/websocket", WebSocket),
-            (f"{self._route_prefix}/klippysocket", BridgeSocket),
             (f"{self._route_prefix}/server/redirect", RedirectHandler),
             (f"{self._route_prefix}/server/jsonrpc", RPCHandler)
-        ]
-        self.app = tornado.web.Application(app_handlers, **app_args)
-        self.get_handler_delegate = self.app.get_handler_delegate
+        ):
+            self.mutable_router.add_handler(ptrn, hdlr, None)
 
         # Register handlers
         logfile = self.server.get_app_args().get('log_file')
@@ -217,7 +247,6 @@ class MoonrakerApp:
         self.register_upload_handler("/server/files/upload")
 
         # Register Server Components
-        self.server.register_component("application", self)
         self.server.register_component("jsonrpc", self.json_rpc)
         self.server.register_component("internal_transport", self.internal_transport)
 
@@ -257,42 +286,43 @@ class MoonrakerApp:
     def listen(self, host: str, port: int, ssl_port: int) -> None:
         if host.lower() == "all":
             host = ""
-        self.http_server = self.app.listen(
-            port, address=host, max_body_size=MAX_BODY_SIZE,
-            xheaders=True)
+        self.http_server = self._create_http_server(port, host)
         if self.https_enabled():
+            if port == ssl_port:
+                self.server.add_warning(
+                    "Failed to start HTTPS server.  Server options 'port' and "
+                    f"'ssl_port' match, both set to {port}.  Modify the "
+                    "configuration to use different ports."
+                )
+                return
             logging.info(f"Starting secure server on port {ssl_port}")
             ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_ctx.load_cert_chain(self.cert_path, self.key_path)
-            self.secure_server = self.app.listen(
-                ssl_port, address=host, max_body_size=MAX_BODY_SIZE,
-                xheaders=True, ssl_options=ssl_ctx)
+            self.secure_server = self._create_http_server(
+                ssl_port, host, ssl_options=ssl_ctx
+            )
         else:
-            logging.info("SSL Certificate/Key not configured, "
-                         "aborting HTTPS Server startup")
+            logging.info(
+                "SSL Certificate/Key not configured, aborting HTTPS Server startup"
+            )
 
-    def log_request(self, handler: tornado.web.RequestHandler) -> None:
-        status_code = handler.get_status()
-        if (
-            not self.server.is_verbose_enabled()
-            and status_code in [200, 204, 206, 304]
-        ):
-            # don't log successful requests in release mode
-            return
-        if status_code < 400:
-            log_method = access_log.info
-        elif status_code < 500:
-            log_method = access_log.warning
-        else:
-            log_method = access_log.error
-        request_time = 1000.0 * handler.request.request_time()
-        user = handler.current_user
-        username = "No User"
-        if user is not None and 'username' in user:
-            username = user['username']
-        log_method(
-            f"{status_code} {handler._request_summary()} "
-            f"[{username}] {request_time:.2f}ms")
+    def _create_http_server(
+        self, port: int, address: str, **kwargs
+    ) -> Optional[HTTPServer]:
+        args: Dict[str, Any] = dict(max_body_size=MAX_BODY_SIZE, xheaders=True)
+        args.update(kwargs)
+        svr = HTTPServer(self.mutable_router, **args)
+        try:
+            svr.listen(port, address)
+        except Exception as e:
+            svr_type = "HTTPS" if "ssl_options" in args else "HTTP"
+            logging.exception(f"{svr_type} Server Start Failed")
+            self.server.add_warning(
+                f"Failed to start {svr_type} server: {e}.  See moonraker.log "
+                "for more details."
+            )
+            return None
+        return svr
 
     def get_server(self) -> Server:
         return self.server
@@ -379,6 +409,13 @@ class MoonrakerApp:
             f"{self._route_prefix}{pattern}", FileUploadHandler, params
         )
 
+    def register_websocket_handler(
+        self, pattern: str, handler: Type[WebSocketHandler]
+    ) -> None:
+        self.mutable_router.add_handler(
+            f"{self._route_prefix}{pattern}", handler, None
+        )
+
     def register_debug_endpoint(
         self,
         endpoint: str,
@@ -463,9 +500,7 @@ class AuthorizedRequestHandler(tornado.web.RequestHandler):
                 pass
             else:
                 wsm: WebsocketManager = self.server.lookup_component("websockets")
-                conn = wsm.get_client(conn_id)
-        if not isinstance(conn, WebSocket):
-            return None
+                conn = wsm.get_client_ws(conn_id)
         return conn
 
     def write_error(self, status_code: int, **kwargs) -> None:
@@ -1111,3 +1146,6 @@ class WelcomeHandler(tornado.web.RequestHandler):
         welcome_template = await app.load_template("welcome.html")
         ret = await welcome_template.render_async(context)
         self.finish(ret)
+
+def load_component(config: ConfigHelper) -> MoonrakerApp:
+    return MoonrakerApp(config)

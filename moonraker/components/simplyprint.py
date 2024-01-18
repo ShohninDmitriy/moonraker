@@ -31,9 +31,9 @@ from typing import (
     Callable,
 )
 if TYPE_CHECKING:
-    from ..app import InternalTransport
+    from .application import InternalTransport
     from ..confighelper import ConfigHelper
-    from ..websockets import WebsocketManager
+    from .websockets import WebsocketManager
     from ..common import BaseRemoteConnection
     from tornado.websocket import WebSocketClientConnection
     from .database import MoonrakerDatabase
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from .power import PrinterPower
     from .announcements import Announcements
     from .webcam import WebcamManager, WebCam
-    from ..klippy_connection import KlippyConnection
+    from .klippy_connection import KlippyConnection
 
 COMPONENT_VERSION = "0.0.1"
 SP_VERSION = "0.1"
