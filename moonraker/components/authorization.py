@@ -82,10 +82,12 @@ class Authorization:
         self.failed_logins: Dict[IPAddr, int] = {}
         self.fqdn_cache: Dict[IPAddr, Dict[str, Any]] = {}
         if self.default_source not in AUTH_SOURCES:
-            raise config.error(
+            self.server.add_warning(
                 "[authorization]: option 'default_source' - Invalid "
-                f"value '{self.default_source}'"
+                f"value '{self.default_source}', falling back to "
+                "'moonraker'."
             )
+            self.default_source = "moonraker"
         self.ldap: Optional[MoonrakerLDAP] = None
         if config.has_section("ldap"):
             self.ldap = self.server.load_component(config, "ldap", None)
@@ -158,14 +160,18 @@ class Authorization:
         for domain in config.getlist('cors_domains', []):
             bad_match = re.search(r"^.+\.[^:]*\*", domain)
             if bad_match is not None:
-                raise config.error(
-                    f"Unsafe CORS Domain '{domain}'.  Wildcards are not"
-                    " permitted in the top level domain.")
+                self.server.add_warning(
+                    f"[authorization]: Unsafe domain '{domain}' in option "
+                    f"'cors_domains'. Wildcards are not permitted in the"
+                    " top level domain."
+                )
+                continue
             if domain.endswith("/"):
                 self.server.add_warning(
                     f"[authorization]: Invalid domain '{domain}' in option "
                     "'cors_domains'.  Domain's cannot contain a trailing "
-                    "slash.")
+                    "slash."
+                )
             else:
                 self.cors_domains.append(
                     domain.replace(".", "\\.").replace("*", ".*"))
@@ -330,15 +336,23 @@ class Authorization:
             "action": "user_logged_out"
         }
 
-    async def _handle_info_request(
-        self, web_request: WebRequest
-    ) -> Dict[str, Any]:
+    async def _handle_info_request(self, web_request: WebRequest) -> Dict[str, Any]:
         sources = ["moonraker"]
         if self.ldap is not None:
             sources.append("ldap")
+        login_req = self.force_logins and len(self.users) > 1
+        request_trusted: Optional[bool] = None
+        user = web_request.current_user
+        req_ip = web_request.ip_addr
+        if user is not None and user.get("username") == TRUSTED_USER:
+            request_trusted = True
+        elif req_ip is not None:
+            request_trusted = await self._check_authorized_ip(req_ip)
         return {
             "default_source": self.default_source,
-            "available_sources": sources
+            "available_sources": sources,
+            "login_required": login_req,
+            "trusted": request_trusted
         }
 
     async def _handle_refresh_jwt(self,
