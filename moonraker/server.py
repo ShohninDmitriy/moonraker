@@ -132,6 +132,12 @@ class Server:
     def get_app_args(self) -> Dict[str, Any]:
         return dict(self.app_args)
 
+    def get_app_arg(self, key: str, default=Sentinel.MISSING) -> Any:
+        val = self.app_args.get(key, default)
+        if val is Sentinel.MISSING:
+            raise KeyError(f"No key '{key}' in Application Arguments")
+        return val
+
     def get_event_loop(self) -> EventLoop:
         return self.event_loop
 
@@ -608,6 +614,9 @@ def main(from_package: bool = True) -> None:
         if not comms_dir.exists():
             comms_dir.mkdir()
         unix_sock = str(comms_dir.joinpath("moonraker.sock"))
+    misc_dir = data_path.joinpath("misc")
+    if not misc_dir.exists():
+        misc_dir.mkdir()
     app_args = {
         "data_path": str(data_path),
         "is_default_data_path": cmd_line_args.datapath is None,
