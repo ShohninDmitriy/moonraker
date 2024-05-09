@@ -41,7 +41,7 @@ opt_four: Once again\# not a comment
   resulting `#` is stored in the value.
 - Option `opt_three` resolves to a value of `This is the value`.  The comment
   specifier is preceded by whitespace, thus the remainder of the line is
-  evaluted as a comment and removed from the option.
+  evaluated as a comment and removed from the option.
 - Option `opt_four` resolves to a value of `Once again\# not a comment`.
   The `\` character is not preceded by whitespace and not evaluated as
   an escape sequence, thus the escape character is not removed from the value.
@@ -128,7 +128,7 @@ check_klipper_config_path: True
 #   By default Moonraker will validate that Klipper's configuration file exists
 #   within the data path's "config" folder, as this is a requirement for
 #   Moonraker to write to the configuration.  If this validation check fails
-#   Moonaker will warn the user. Installations that do not wish to use Moonraker
+#   Moonraker will warn the user. Installations that do not wish to use Moonraker
 #   to manage Klipper's configuration may set this option to False to bypass the
 #   location check.  The default is True.
 enable_object_processing: False
@@ -675,11 +675,11 @@ The following configuration options are available for all power device types:
 type:
 #   The type of device.  Can be either gpio, klipper_device, rf,
 #   tplink_smartplug, tasmota, shelly, homeseer, homeassistant, loxonev1,
-#   smartthings, mqtt or hue.
+#   smartthings, mqtt, hue, http or uhubctl.
 #   This parameter must be provided.
 initial_state: off
 #    The state the power device should be initialized to.  May be on or
-#    off.  When this option is not specifed no initial state will be set.
+#    off.  When this option is not specified no initial state will be set.
 off_when_shutdown: False
 #   If set to True the device will be powered off when Klipper enters
 #   the "shutdown" state.  This option applies to all device types.
@@ -1324,9 +1324,8 @@ address:
 #   A valid ip address or hostname of the Philips Hue Bridge. This
 #   parameter must be provided.
 port:
-#   A port number if an alternative Zigbee bridge is used on a HTTP port 
+#   A port number if an alternative Zigbee bridge is used on a HTTP port
 #   different from the default 80/443
-#   
 user:
 #   The api key used for request authorization.  This option accepts
 #   Jinja2 Templates, see the [secrets] section for details.
@@ -1342,6 +1341,59 @@ device_type: light
 #   and if the device_type is group, the device_id should be the group id.
 #   The default is "light".
 
+```
+
+#### USB (uhubctl) devices
+
+Support for toggling USB powered devices via [uhubctl](https://github.com/mvp/uhubctl).
+
+!!! Note
+    The host machine must have `uhubctl` installed as a prerequisite.  In addition,
+    the required [udev rules](https://github.com/mvp/uhubctl#linux-usb-permissions)
+    must be installed on the host to give Moonraker permission to toggle hub
+    power without sudo.
+
+```ini
+location:
+#  Device location of the USB Hub connected to the device to control.  The
+#  location corresponds to the "-l" option of "uhubctl". This parameter
+#  must be provided.
+port:
+#  Port of the USB device to control.  The port corresponds to the "-p"
+#  option of "ububctl". This parameter must be provided
+
+```
+
+!!! Tip
+    The `uhubctl` software can be used to list all compatible hubs on the
+    system by simply executing `uhubctl` with no arguments.  The following
+    is example output from a Raspberry Pi 3B+:
+
+    ```
+    Current status for hub 1-1.1 [0424:2514, USB 2.00, 3 ports, ppps]
+      Port 1: 0503 power highspeed enable connect [0424:7800]
+      Port 2: 0100 power
+      Port 3: 0100 power
+    Current status for hub 1-1 [0424:2514, USB 2.00, 4 ports, ppps]
+      Port 1: 0503 power highspeed enable connect [0424:2514, USB 2.00, 3 ports, ppps]
+      Port 2: 0100 power
+      Port 3: 0103 power enable connect [1d50:614e Klipper rp2040 45503571290B1068]
+      Port 4: 0100 power
+    Current status for hub 1 [1d6b:0002 Linux 6.6.28+rpt-rpi-v7 dwc_otg_hcd DWC OTG Controller 3f980000.usb, USB 2.00, 1 ports, ppps]
+      Port 1: 0503 power highspeed enable connect [0424:2514, USB 2.00, 4 ports, ppps]
+    ```
+
+##### Example
+
+```ini
+# moonraker.confg
+
+# Example for controlling a device connected to a Raspberry Pi 3B+.
+# Location 1-1 Port 2 controls power for all 4 exposed ports.
+[power my_usb_dev]
+type: uhubctl
+location: 1-1
+port: 2
 ```
 
 #### Generic HTTP Devices
@@ -2814,7 +2866,101 @@ type:
 name:
 #   The friendly display name of the sensor.
 #   The default is the sensor source name.
+history_field_{field_name}:
+#   Optional history field description.  When provided the named
+#   field will be tracked in Moonraker's Job History component.
+#   The "field_name" portion of the option is the identifier used
+#   when reported in the history.  Multiple history fields may be
+#   added and tracked for a sensor.  See the "History Fields" note
+#   for a detailed explanation of this option.
 ```
+
+!!! note "History Fields"
+    A `history_field_{name}` option must contain a series of key-value pairs.
+    The key and value must be separated by an equal sign (=), and each
+    pair must be separated by a newline.  The following keys are
+    available:
+
+    -  `parameter`: The name of the sensor parameter which is used to
+       provide values for this field.  This name must match a field name
+       set in the specific sensor implementation (ie: see the
+       "state_response_template" option for the MQTT type.)  This must
+       be provided.
+    -  `desc`: A brief description of the field.
+    -  `strategy`:  The tracking strategy used to calculate the value
+       stored in the history. See below for available strategies.
+       The default is "basic".
+    -  `units`:  An optional unit specifier for the value
+    -  `init_tracker`:  When set to true the tracked value will be initialized
+       to the last sensor measurement when a job starts.  The "delta"
+       strategy will initialize its "last value", setting this measurement
+       as the reference rather than the first received after the print starts.
+       Default is false.
+    -  `exclude_paused`:  When set to true the values received when
+       a job is paused will be ignored.  Default is false.
+    -  `report_total`:  When set to true the value reported for all
+       jobs will be accumulated and reported in the history totals.
+       Default is false.
+    -  `report_maximum`:  When set to true maximum value for all jobs
+       will be reported in the history totals.  Default is false.
+    -  `precision`:  An integer value indicating the precision to use when
+       reporting decimal values.  This precision applies to both job history
+       AND job totals.  The default is no precision, ie: no rounding will
+       occur.
+
+    Note that job totals for history fields only persist for a currently
+    configured sensor and history field name.  If the name of the sensor
+    changes, the name of the field changes, or if either are removed
+    from the configuration, then their totals will be discarded.  This
+    prevents the accumulation of stale totals.
+
+    Moonraker provides several history tracking strategies that can be used
+    accommodate how values should be tracked and stored in the job history:
+
+    - `basic`: This strategy should be used if the value should be stored
+      in history directly as it is received.  Simply put, the last value
+      received before a job completes wiill the the value stored in the job
+      history.
+    - `accumulate`:  When a job starts, the tracked value initialized to 0 or
+      the last received measurement.  New measurements will be added to the
+      tracked value as they are received.  The total cumulative value will be
+      reported when the job ends.
+    - `delta`:  When a job starts the tracked value is 0.  The total value
+      will be the delta between the final measurement received before the job
+      ends and the first measurement received when after job begins.  Note that
+      if `exclude_paused` is set then the tracker will accumulate deltas
+      between pauses.  If the measurement does not update frequently this could
+      significantly alter the final result.
+    - `average`: Reports an average of all measurements received during the job.
+    - `maximum`: Reports the maximum value of all measurements received during
+       the job.
+    - `minimum`: Reports the minimum value of all measurements received during
+       the job.
+    - `collect`:  Measurements are stored in a list as they are received.
+      Duplicate measurements are discarded.  A maximum of 100 entries may
+      be stored, the oldest measurements will be discarded when this limit
+      is exceeded.  This strategy is useful for a sensor that reports some
+      data infrequently and its desirable to include all measurements in the
+      job history.  For example, the `spoolman` component uses this strategy
+      to report all spool IDs set during a job.  When this strategy is enabled
+      the `track_total` and `track_maximum` options are ignored, as it is not
+      possible to report totals for a collection.
+
+    Example:
+
+    ```
+    history_field_total_energy:
+      parameter=energy
+      desc=Printer power consumption
+      strategy=delta
+      units=kWh
+      init_tracker=false
+      exclude_paused=false
+      report_total=true
+      report_maximum=true
+      precision=6
+    ```
+
 
 #### MQTT Sensor Configuration
 
@@ -2879,6 +3025,55 @@ state_response_template:
   {set_result("voltage", notification["voltage"]|float)}
   {set_result("current", notification["current"]|float)}
   {set_result("energy", notification["aenergy"]["by_minute"][0]|float * 0.000001)}
+```
+
+Tasmota Example:
+
+!!! Note
+    It may be necessary to set Tasmota's Telemetry Period to a low value
+    to acheive a decent response.  This can be done in the with the
+    `TelePeriod` command via the console.  For example, the command
+    to set the telemetry period to 10 seconds is:
+
+    `cmnd/%device_name%/TelePeriod` with a payload of `10`.
+
+```ini
+[sensor tasmota_power]
+type: mqtt
+state_topic: tele/tasmota_switch/SENSOR
+state_response_template:
+  {% set resp = payload|fromjson %}
+  {% set edata = resp["ENERGY"] %}
+  {set_result("energy", edata["Total"])}
+  {set_result("voltage", edata["Voltage"])}
+  {set_result("power", edata["Power"])}
+  {set_result("current", edata["Current"])}
+history_field_energy_consumption:
+  parameter=energy
+  desc=Printer energy consumption
+  strategy=delta
+  units=kWh
+  init_tracker=true
+  precision=6
+  exclude_paused=false
+  report_total=true
+  report_maximum=true
+history_field_average_current:
+  parameter=current
+  desc=Average current draw
+  strategy=average
+  units=A
+  report_total=false
+  report_maximum=true
+# Mulitple history fields may track the same sensor parameter:
+history_field_max_current:
+  parameter=current
+  desc=Maximum current draw
+  strategy=maximum
+  units=A
+  init_tracker=true
+  report_total=false
+  report_maximum=false
 ```
 
 ### `[spoolman]`
