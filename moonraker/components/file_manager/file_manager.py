@@ -43,7 +43,7 @@ from typing import (
 if TYPE_CHECKING:
     from inotify_simple import Event as InotifyEvent
     from ...confighelper import ConfigHelper
-    from ...common import WebRequest
+    from ...common import WebRequest, UserInfo
     from ..klippy_connection import KlippyConnection
     from ..job_queue import JobQueue
     from ..job_state import JobState
@@ -76,9 +76,8 @@ class FileManager:
         db_path = db.get_database_path()
         self.add_reserved_path("database", db_path, False)
         self.add_reserved_path("certs", self.datapath.joinpath("certs"), False)
-        self.add_reserved_path(
-            "systemd", self.datapath.joinpath("systemd"), False
-        )
+        self.add_reserved_path("systemd", self.datapath.joinpath("systemd"), False)
+        self.add_reserved_path("backup", self.datapath.joinpath("backup"), False)
         self.gcode_metadata = MetadataStorage(config, db)
         self.sync_lock = NotifySyncLock(config)
         avail_observers: Dict[str, Type[BaseFileSystemObserver]] = {
@@ -615,6 +614,8 @@ class FileManager:
                     ):
                         action = "modify_file"
                     op_func = shutil.copy2
+            else:
+                raise self.server.error(f"Invalid endpoint {ep}")
             self.sync_lock.setup(action, dest_path, move_copy=True)
             try:
                 full_dest = await self.event_loop.run_in_thread(
@@ -902,7 +903,7 @@ class FileManager:
         started: bool = False
         queued: bool = False
         if upload_info['start_print']:
-            user: Optional[Dict[str, Any]] = upload_info.get("user")
+            user: Optional[UserInfo] = upload_info.get("user")
             if can_start:
                 kapis: APIComp = self.server.lookup_component('klippy_apis')
                 try:
@@ -1961,7 +1962,7 @@ class InotifyObserver(BaseFileSystemObserver):
     def _handle_move_timeout(self, cookie: int, is_dir: bool):
         if cookie not in self.pending_moves:
             return
-        parent_node, name, hdl = self.pending_moves.pop(cookie)
+        parent_node, name, _ = self.pending_moves.pop(cookie)
         item_path = os.path.join(parent_node.get_path(), name)
         root = parent_node.get_root()
         self.clear_metadata(root, item_path, is_dir)
