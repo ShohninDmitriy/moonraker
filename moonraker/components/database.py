@@ -121,16 +121,33 @@ def generate_lmdb_entries(
         return
     MAX_LMDB_NAMESPACES = 100
     MAX_LMDB_SIZE = 200 * 2**20
-    try:
-        import lmdb
-        lmdb_env: LmdbEnvironment = lmdb.open(
-            str(db_folder), map_size=MAX_LMDB_SIZE, max_dbs=MAX_LMDB_NAMESPACES
-        )
-    except Exception:
-        logging.exception(
-            "Failed to open lmdb database, aborting conversion"
-        )
-        return
+    inst_attempted: bool = False
+    while True:
+        try:
+            import lmdb
+            lmdb_env: LmdbEnvironment = lmdb.open(
+                str(db_folder), map_size=MAX_LMDB_SIZE, max_dbs=MAX_LMDB_NAMESPACES
+            )
+        except ModuleNotFoundError:
+            if inst_attempted:
+                logging.info(
+                    "Attempt to install LMDB failed, aborting conversion."
+                )
+                return
+            import sys
+            from ..utils import pip_utils
+            inst_attempted = True
+            logging.info("LMDB module not found, attempting installation...")
+            pip_cmd = f"{sys.executable} -m pip"
+            pip_exec = pip_utils.PipExecutor(pip_cmd, logging.info)
+            pip_exec.install_packages(["lmdb"])
+        except Exception:
+            logging.exception(
+                "Failed to open lmdb database, aborting conversion"
+            )
+            return
+        else:
+            break
     lmdb_namespaces: List[Tuple[str, object]] = []
     with lmdb_env.begin(buffers=True) as txn:
         # lookup existing namespaces
@@ -194,11 +211,10 @@ class MoonrakerDatabase:
         stored_iid = self.get_item("moonraker", "instance_id", None).result()
         if stored_iid is not None:
             if instance_id != stored_iid:
-                self.server.add_warning(
+                self.server.add_log_rollover_item(
+                    "uuid_mismatch",
                     "Database: Stored Instance ID does not match current Instance "
-                    "ID. Make sure that this database is not shared between multiple "
-                    f"Instances of Moonraker.\n\nCurrent UUID: {instance_id}\n"
-                    f"Stored UUID: {stored_iid}"
+                    f"ID.\n\nCurrent UUID: {instance_id}\nStored UUID: {stored_iid}"
                 )
         else:
             self.insert_item("moonraker", "instance_id", instance_id)

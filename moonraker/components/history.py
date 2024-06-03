@@ -65,6 +65,8 @@ def _create_totals_list(
         maximum = value if total is None else None
         totals_list.append(("history", key, maximum, total, instance))
     for item in aux_totals:
+        if not isinstance(item, dict):
+            continue
         totals_list.append(
             (
                 item["provider"],
@@ -99,6 +101,10 @@ class TotalsSqlDefinition(SqlTableDefinition):
             hist_ns: Dict[str, Any] = db_provider.get_item("moonraker", "history", {})
             job_totals: Dict[str, Any] = hist_ns.get("job_totals", BASE_TOTALS)
             aux_totals: List[Dict[str, Any]] = hist_ns.get("aux_totals", [])
+            if not isinstance(job_totals, dict):
+                job_totals = dict(BASE_TOTALS)
+            if not isinstance(aux_totals, list):
+                aux_totals = []
             totals_list = _create_totals_list(job_totals, aux_totals)
             sql_conn = db_provider.connection
             with sql_conn:
@@ -133,27 +139,40 @@ class HistorySqlDefinition(SqlTableDefinition):
     )
     version = 1
 
+    def _get_entry_item(
+        self, entry: Dict[str, Any], name: str, default: Any = 0.
+    ) -> Any:
+        val = entry.get(name)
+        if val is None:
+            return default
+        return val
+
     def migrate(self, last_version: int, db_provider: DBProviderWrapper) -> None:
         if last_version == 0:
             conn = db_provider.connection
             for batch in db_provider.iter_namespace("history", 1000):
                 conv_vals: List[Tuple[Any, ...]] = []
                 entry: Dict[str, Any]
-                for entry in batch.values():
+                for key, entry in batch.items():
+                    if not isinstance(entry, dict):
+                        logging.info(
+                            f"History migration, skipping invalid value: {key} {entry}"
+                        )
+                        continue
                     try:
                         conv_vals.append(
                             (
                                 None,
-                                entry.get("user", "No User"),
-                                entry["filename"],
-                                entry["status"],
-                                entry["start_time"],
-                                entry["end_time"],
-                                entry["print_duration"],
-                                entry["total_duration"],
-                                entry["filament_used"],
-                                entry["metadata"],
-                                entry.get("auxiliary_data", []),
+                                self._get_entry_item(entry, "user", "No User"),
+                                self._get_entry_item(entry, "filename", "unknown"),
+                                self._get_entry_item(entry, "status", "error"),
+                                self._get_entry_item(entry, "start_time"),
+                                self._get_entry_item(entry, "end_time"),
+                                self._get_entry_item(entry, "print_duration"),
+                                self._get_entry_item(entry, "total_duration"),
+                                self._get_entry_item(entry, "filament_used"),
+                                self._get_entry_item(entry, "metadata", {}),
+                                self._get_entry_item(entry, "auxiliary_data", []),
                                 "default"
                             )
                         )
@@ -606,7 +625,7 @@ class PrinterJob:
                print_stats: Dict[str, Any] = {}
                ) -> None:
         self.end_time = time.time()
-        self.status = status
+        self.status = status if status is not None else "error"
         self.update_from_ps(print_stats)
 
     def get(self, name: str) -> Any:
@@ -627,7 +646,7 @@ class PrinterJob:
 
     def update_from_ps(self, data: Dict[str, Any]) -> None:
         for i in data:
-            if hasattr(self, i):
+            if hasattr(self, i) and data[i] is not None:
                 setattr(self, i, data[i])
 
 
