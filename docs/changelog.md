@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog].
 
 ## [Unreleased]
 
+### Changed
+- **data_store**: Store multi-line gcode commands in a single entry.
+- **dbus_manager**: Replace unmaintained `dbus-next` requirement with
+  `dbus-fast`.
+- **pip_utils**:  Use the "upgrade" option when installing python packages.
+  This will force upgrades to the latest version available as resolved by
+  the requirement specifier.
+- **wled**: Use the `async_serial` utility for serial comms.
+- **paneldue**: Use the `async_serial` utility for serial comms.
+- **scripts**: Update `fetch-apikey.sh` to query the SQL database
+- **update_manager**: The following endpoints have been deprecated
+  as of API version 1.5.0:
+  - `/machine/update/full`
+  - `/machine/update/client`
+  - `/machine/update/moonraker`
+  - `/machine/update/klipper`
+  - `/machine/update/system`
+
+  The new `/machine/update/upgrade` endpoint replaces the functionality
+  of all of the above.  The deprecated endpoints will NOT be removed,
+  so existing software does not need to be changed.  New software
+  should use the new endpoint, however it may be desirable to also
+  support the deprecated `full` and `client` endpoints for compatibility
+  with older API versions.
+
+### Fixed
+- **python_deploy**: fix "dev" channel updates for GitHub sources.
+
+### Added
+- **application**: Verify that a filename is present when parsing the
+  multipart/form-data for uploads.
+- **application**: Log all failed HTTP API requests when verbose logging
+  is enabled.
+- **install**: Support "requirement specifiers" for system packages.
+  Initially this is limited to restricting packages to a specific
+  distro version.
+- **async_serial**: Basic asyncio wrapper around pyserial.
+- **wled**: Add initial support for receiving responses.
+- **scripts**: Add a `-g` option to `fetch-apikey.sh`.  When specified
+  a new API Key will be generated and stored in the database.  After
+  running this script it is necessary to restart Moonraker.
+- **update_manager**:  Report `name` and `configured_type` for all status
+  response types.  This adds consistency and allows front-end devs to
+  simply iterate over the values of the `version_info` object.
+- **python_deploy**: Add support for updating python packages with
+  "extras" installed.
+
+
 ## [0.9.3] - 2024-09-05
 
 ### Changed
