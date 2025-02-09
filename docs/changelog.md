@@ -30,9 +30,17 @@ The format is based on [Keep a Changelog].
   should use the new endpoint, however it may be desirable to also
   support the deprecated `full` and `client` endpoints for compatibility
   with older API versions.
+- **build**: Bump PDM-Backend to 2.4.3.
+- **build**: Bump Apprise to 1.9.2
+- **build**: Bump Tornado to 6.4.2
+- **build**: Bump Streaming-form-data to 1.19.1
+- **build**: Bump Jinja2 to 3.1.5
 
 ### Fixed
 - **python_deploy**: fix "dev" channel updates for GitHub sources.
+- **mqtt**: Publish the result of the Klipper status subscription request.
+  This fixes issues with MQTT clients missing the initial status updates
+  after Klippy restarts.
 
 ### Added
 - **application**: Verify that a filename is present when parsing the
@@ -174,7 +182,8 @@ The format is based on [Keep a Changelog].
 - **update_manager**: The `install_script` option for the `git_repo` has been
   deprecated, new configurations should use the `system_dependencies` option.
 - **update_manager**: APIs that return status report additional fields.
-  See the [API Documentation](./web_api.md#get-update-status) for details.
+  See the [API Documentation](./external_api/update_manager.md#get-update-status)
+  for details.
 - **proc_stats**: Improved performance of Raspberry Pi CPU throttle detection.
 - **power**:  Bound services are now processed during initialization when
   `initial_state` is configured.
@@ -193,7 +202,7 @@ The format is based on [Keep a Changelog].
 
 !!! Note
     This is the first tagged release since a changelog was introduced.  The list
-    below contains notable changes introduced beginning in Feburary 2023. Prior
+    below contains notable changes introduced beginning in February 2023. Prior
     notable changes were kept in [user_changes.md] and [api_changes.md].
 
 ### Added
@@ -202,10 +211,10 @@ The format is based on [Keep a Changelog].
 - Added pyproject.toml with support for builds through [pdm](https://pdm.fming.dev/latest/).
 - **sensor**: New component for generic sensor configuration.
     - [Configuration Docs](configuration.md#sensor)
-    - [API Docs](web_api.md#sensor-apis)
-    - [Websocket Notification Docs](web_api.md#sensor-events)
-- **file_manager**: Added new [scan metadata](web_api.md#scan-gcode-metadata) endpoint.
-- **file_manager**: Added new [thumbnails](web_api.md#get-gcode-thumbnails) endpoint.
+    - [API Docs](./external_api/devices.md#sensor-endpoints)
+    - [Websocket Notification Docs](./external_api/jsonrpc_notifications.md#sensor-events)
+- **file_manager**: Added new [scan metadata](./external_api/file_manager.md#scan-gcode-metadata) endpoint.
+- **file_manager**: Added new [thumbnails](./external_api/file_manager.md#get-gcode-thumbnail-details) endpoint.
 - **file_manager**: Added [file_system_observer](configuration.md#file_manager)
   configuration option.
 - **file_manager**: Added [enable_observer_warnings](configuration.md#file_manager)
@@ -217,9 +226,9 @@ The format is based on [Keep a Changelog].
 - **machine**: Added service detection to the `supervisord_cli` provider.
 - **machine**: Added `octoeverywhere` to the list of default allowed service.
 - **power**: Added support for "Hue" device groups.
-- **websockets**: Added support for [direct bridge](web_api.md#bridge-websocket)
+- **websockets**: Added support for [direct bridge](./external_api/introduction.md#bridge-websocket)
   connections.
-- **update_manager**: Added new [refresh](web_api.md#refresh-update-status) endpoint.
+- **update_manager**: Added new [refresh](./external_api/update_manager.md#refresh-update-status) endpoint.
 - **update_manager**: Added support for pinned pip upgrades.
 - **websockets**:  Added support for post connection authentication over the websocket.
 - **scripts**:  Added database backup and restore scripts.
