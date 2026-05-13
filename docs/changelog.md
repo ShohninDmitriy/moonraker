@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog].
 
 ## [Unreleased]
 
+### Changed
+- **machine**: Support standard reboot and shutdown commands
+
+### Added
+- **metadata**: Auto-detect forks of PrusaSlicer.
+- **metadata**: Add `printer_vendor`, `printer_model`, `printer_variant`,
+  and `profile_version` parsing for PrusaSlicer derivatives.
+
 ## [0.10.0] - 2026-01-21
 
 ### Changed
